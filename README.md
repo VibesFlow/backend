@@ -54,4 +54,4 @@ Health check endpoint.
 }
 ```
 
-See [raw-mock.yml](https://github.com/VibesFlow/backend/rawchunks) to see the whole thing.
+See [raw-mock.yml](https://github.com/VibesFlow/backend/blob/main/rawchunks/raw-mock.yml) for the whole thing.
