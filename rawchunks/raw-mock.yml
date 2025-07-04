@@ -1,0 +1,168 @@
+service: rawchunks
+
+provider:
+  name: aws
+  runtime: nodejs20.x
+  region: us-east-1
+  stage: ${opt:stage, 'dev'}
+  timeout: 30
+  memorySize: 1024  # Increased for audio processing
+  apiGateway:
+    minimumCompressionSize: 1024
+  environment:
+    BUCKET: ${self:service}-raw-chunks-${self:provider.stage}
+    QUEUE_URL: 
+      Ref: ChunkQueue
+    CHUNKER_WORKER_URL: deployed-worker-url
+    # Pinata IPFS Storage (UPDATED CREDENTIALS)
+    PINATA_API_KEY: your-api-key
+    PINATA_API_SECRET: your-api-secret
+    PINATA_JWT: your-pinata-jwt
+    PINATA_URL: your-pinata-url
+    TMP: /tmp
+    # AWS Configuration
+    AWS_REGION: ${self:provider.region}
+    MAX_CHUNK_SIZE: 20971520  # 20MB
+    # Audio Processing
+    DEFAULT_SAMPLE_RATE: 48000
+    DEFAULT_CHANNELS: 2
+    DEFAULT_BIT_DEPTH: 16
+    CHUNK_DURATION_MS: 60000
+  iamRoleStatements:
+    - Effect: Allow
+      Action:
+        - s3:PutObject
+        - s3:GetObject
+      Resource:
+        - arn:aws:s3:::${self:provider.environment.BUCKET}/*
+    - Effect: Allow
+      Action:
+        - sqs:SendMessage
+        - sqs:ReceiveMessage
+        - sqs:DeleteMessage
+      Resource:
+        - Fn::GetAtt:
+            - ChunkQueue
+            - Arn
+
+functions:
+  uploadChunk:
+    handler: raw.uploadChunk
+    timeout: 30
+    memorySize: 1024
+    layers:
+      - arn:aws:lambda:us-east-1:145266761615:layer:ffmpeg:4
+    events:
+      - http:
+          path: /
+          method: post
+          cors:
+            origin: '*'
+            headers:
+              - Content-Type
+              - X-Amz-Date
+              - Authorization
+              - X-Api-Key
+              - X-Chunk-Id
+              - X-Rta-Id
+              - X-Creator
+              - X-Start-Time
+              - X-Chunk-Timestamp
+              - X-Sample-Rate
+              - X-Channels
+              - X-Bit-Depth
+              - X-Is-Final
+              - X-Audio-Format
+              - X-Original-Size
+              - X-Compressed-Size
+            allowCredentials: false
+
+  updateMetadata:
+    handler: raw.updateChunkMetadata
+    events:
+      - http:
+          path: /metadata
+          method: post
+          cors: true
+
+  processChunk:
+    handler: raw.processChunk
+    timeout: 60
+    memorySize: 1024
+    events:
+      - sqs:
+          arn:
+            Fn::GetAtt:
+              - ChunkQueue
+              - Arn
+
+  options:
+    handler: raw.options
+    events:
+      - http:
+          path: /
+          method: options
+          cors:
+            origin: '*'
+            headers:
+              - Content-Type
+              - X-Amz-Date
+              - Authorization
+              - X-Api-Key
+              - X-Chunk-Id
+              - X-Rta-Id
+              - X-Creator
+              - X-Start-Time
+              - X-Chunk-Timestamp
+              - X-Sample-Rate
+              - X-Channels
+              - X-Bit-Depth
+              - X-Is-Final
+              - X-Audio-Format
+              - X-Original-Size
+              - X-Compressed-Size
+            allowCredentials: false
+
+  health:
+    handler: raw.health
+    events:
+      - http:
+          path: /health
+          method: get
+          cors:
+            origin: '*'
+            allowCredentials: false
+
+resources:
+  Resources:
+    RawChunksBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:provider.environment.BUCKET}
+        VersioningConfiguration:
+          Status: Enabled
+
+    ChunkQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:service}-chunks-${self:provider.stage}.fifo
+        FifoQueue: true
+        ContentBasedDeduplication: false
+        MessageRetentionPeriod: 1209600  # 14 days
+        VisibilityTimeoutSeconds: 180
+        RedrivePolicy:
+          deadLetterTargetArn:
+            Fn::GetAtt:
+              - ChunkDeadLetterQueue
+              - Arn
+          maxReceiveCount: 3
+
+    ChunkDeadLetterQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:service}-chunks-dlq-${self:provider.stage}.fifo
+        FifoQueue: true
+        MessageRetentionPeriod: 1209600  # 14 days
+
+plugins:
+  - serverless-offline
