@@ -10,21 +10,31 @@
     "deploy:dev": "npx serverless deploy --stage dev",
     "deploy:prod": "npx serverless deploy --stage prod",
     "logs": "npx serverless logs -f uploadChunk --tail",
-    "remove": "npx serverless remove"
+    "remove": "npx serverless remove",
+    "deals": "export $(cat .env | grep -v '#' | xargs) && node deals.js",
+    "deals:status": "export $(cat .env | grep -v '#' | xargs) && node deals.js status",
+    "deals:watch": "export $(cat .env | grep -v '#' | xargs) && node deals.js watch",
+    "deals:filcdn": "export $(cat .env | grep -v '#' | xargs) && node deals.js filcdn"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "description": "",
   "devDependencies": {
-    "serverless": "^4.17.1"
+    "serverless": "^4.17.1",
+    "serverless-offline": "^14.4.0"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.470.0",
     "@aws-sdk/client-sqs": "^3.470.0",
+    "@filoz/synapse-sdk": "^0.18.0",
     "@google/genai": "^1.8.0",
+    "chalk": "^5.4.1",
+    "cli-table3": "^0.6.5",
+    "commander": "^14.0.0",
     "cors": "^2.8.5",
-    "dotenv": "^16.3.1",
+    "dotenv": "^16.6.1",
+    "ethers": "^6.15.0",
     "express": "^4.18.2",
     "form-data": "^4.0.3",
     "node-fetch": "^2.7.0"

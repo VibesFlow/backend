@@ -1,6 +1,4 @@
 .env
-raw.yml
-serverless.yml
 local.js
 test.js
 node_modules/
