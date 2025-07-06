@@ -114,6 +114,25 @@ functions:
           method: post
           cors: true
 
+  # NEW: Real Synapse SDK API endpoints
+  getVibestreams:
+    handler: raw.getVibestreams
+    timeout: 60  # Increased timeout for Synapse SDK calls
+    events:
+      - http:
+          path: /api/vibestreams
+          method: get
+          cors: true
+
+  downloadChunk:
+    handler: raw.downloadChunk
+    timeout: 60  # Increased timeout for download operations
+    events:
+      - http:
+          path: /api/download/{cid}
+          method: get
+          cors: true
+
 resources:
   Resources:
     RawChunksBucket:

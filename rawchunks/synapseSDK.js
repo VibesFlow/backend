@@ -1,580 +1,256 @@
 /**
  * SYNAPSE SDK - Filecoin Storage for VibesFlow
  * 
- * Implements optimized Synapse SDK integration with:
- * 1. Session-based caching for balance checks and approvals
- * 2. Storage service reuse across uploads
- * 3. Proper PDP receipt formatting
- * 4. RTA JSON compilation with all CIDs+PDPs
- * 5. Exact preflight implementation following tutorial
+ * Clean implementation following fs-upload-dapp pattern:
+ * 1. Progressive chunk upload by RTA ID
+ * 2. Proper metadata compilation for FilCDN retrieval
+ * 3. Real Synapse SDK integration (no mocks)
  */
 
-// Load environment variables
 require('dotenv').config();
-
-// Configuration
-const config = require('./config');
 const { ethers } = require('ethers');
 const FormData = require('form-data');
 const fetch = require('node-fetch');
 
-// Synapse SDK is ESM-only, requires dynamic imports
-let Synapse, RPC_URLS, TOKENS, CONTRACT_ADDRESSES;
+// Synapse SDK dynamic imports
+let Synapse, RPC_URLS, CONTRACT_ADDRESSES, PandoraService;
 
 async function initializeSynapseSDK() {
   if (!Synapse) {
-    try {
-      const synapseModule = await import('@filoz/synapse-sdk');
-      Synapse = synapseModule.Synapse;
-      RPC_URLS = synapseModule.RPC_URLS;
-      TOKENS = synapseModule.TOKENS;
-      CONTRACT_ADDRESSES = synapseModule.CONTRACT_ADDRESSES;
-      console.log('✅ Synapse SDK modules loaded successfully');
-    } catch (error) {
-      console.error('❌ Failed to load Synapse SDK:', error);
-      throw error;
-    }
+    const synapseModule = await import('@filoz/synapse-sdk');
+    const pandoraModule = await import('@filoz/synapse-sdk/pandora');
+    Synapse = synapseModule.Synapse;
+    RPC_URLS = synapseModule.RPC_URLS;
+    CONTRACT_ADDRESSES = synapseModule.CONTRACT_ADDRESSES;
+    PandoraService = pandoraModule.PandoraService;
   }
-  return { Synapse, RPC_URLS, TOKENS, CONTRACT_ADDRESSES };
+  return { Synapse, RPC_URLS, CONTRACT_ADDRESSES, PandoraService };
 }
 
 // Environment configuration
 const FILECOIN_PRIVATE_KEY = process.env.FILECOIN_PRIVATE_KEY;
-const FILECOIN_NETWORK = config.network;
+const FILECOIN_NETWORK = 'calibration';
 const PINATA_JWT = process.env.PINATA_JWT;
 
-// Session-based caching for optimizations
-const sessionCache = {
-  balanceChecked: false,
-  balanceCheckTime: 0,
-  approvalDone: false,
-  approvalTime: 0,
-  storage: null,
-  synapse: null,
-  signerAddress: null
-};
-
-// Upload queue and status tracking
-const filecoinQueue = new Map();
-const uploadStatus = new Map();
-const rtaCompilations = new Map();
-
-// Cache validity duration (10 minutes)
-const CACHE_DURATION = 10 * 60 * 1000;
-
-// Add status tracking system
-const uploadTracker = new Map();
+// RTA storage: chunks grouped by RTA ID
+const rtaStorage = new Map(); // rtaId -> { chunks: [], metadata: {} }
 
 /**
- * Initialize Synapse instance with session caching
+ * Initialize Synapse instance with wallet
  */
 async function createSynapseInstance() {
-  // Return cached instance if available
-  if (sessionCache.synapse && sessionCache.signerAddress) {
-    console.log(`♻️ Reusing Synapse instance for ${sessionCache.signerAddress}`);
-    return sessionCache.synapse;
-  }
-  
-  console.log('🔧 Initializing new Synapse SDK instance...');
-  
   const { Synapse, RPC_URLS } = await initializeSynapseSDK();
   
   if (!FILECOIN_PRIVATE_KEY) {
     throw new Error('FILECOIN_PRIVATE_KEY environment variable required');
   }
   
-  // Use appropriate RPC URL based on network
-  const rpcURL = FILECOIN_NETWORK === 'mainnet' 
-    ? RPC_URLS.mainnet.websocket 
-    : RPC_URLS.calibration.websocket;
+  // Create provider and signer
+  const provider = new ethers.JsonRpcProvider('https://api.calibration.node.glif.io/rpc/v1');
+  const signer = new ethers.Wallet(FILECOIN_PRIVATE_KEY, provider);
   
-  console.log(`🌐 Using ${FILECOIN_NETWORK} network: ${rpcURL}`);
+  // Create Synapse instance with only signer (not both signer and provider)
+  const synapse = await Synapse.create({
+    signer: signer,
+    withCDN: true // Enable CDN for VibesFlow
+  });
   
-  try {
-    // Initialize SDK
-    const synapse = await Synapse.create({
-      privateKey: FILECOIN_PRIVATE_KEY,
-      rpcURL: rpcURL
-    });
-    
-    // Get signer address - fix the undefined issue
-    const signer = synapse.getSigner();
-    const signerAddress = await signer.getAddress();
-    
-    // Cache the instance
-    sessionCache.synapse = synapse;
-    sessionCache.signerAddress = signerAddress;
-    
-    console.log(`✅ Synapse instance created for address: ${signerAddress}`);
-    return synapse;
-    
-  } catch (error) {
-    console.error('❌ Failed to create Synapse instance:', error);
-    throw error;
-  }
+  return synapse;
 }
 
 /**
- * Optimized payment setup with session caching
+ * Perform preflight check and setup payments if needed
  */
-async function setupPayments(synapse) {
-  const now = Date.now();
+async function ensurePaymentSetup(synapse, fileSize) {
+  const { CONTRACT_ADDRESSES, PandoraService } = await initializeSynapseSDK();
   
-  // Skip if already done and cache is valid
-  if (config.optimizations.skipRedundantApprovals && 
-      sessionCache.approvalDone && 
-      (now - sessionCache.approvalTime) < CACHE_DURATION) {
-    console.log('♻️ Skipping payment setup - already done in this session');
-    return true;
-  }
+  const signer = synapse.getSigner();
+  const pandoraService = new PandoraService(
+    signer.provider,
+    CONTRACT_ADDRESSES.PANDORA_SERVICE[FILECOIN_NETWORK]
+  );
   
-  console.log('💰 Setting up payments for Filecoin storage...');
+  // Check allowance for file size
+  const preflight = await pandoraService.checkAllowanceForStorage(
+    fileSize,
+    true, // withCDN
+    synapse.payments
+  );
   
-  const { TOKENS, CONTRACT_ADDRESSES } = await initializeSynapseSDK();
-  
-  try {
-    // Get network and contract addresses
-    const network = synapse.getNetwork();
-    const pandoraAddress = CONTRACT_ADDRESSES.PANDORA_SERVICE[network];
-    
-    console.log(`🏪 Pandora contract address: ${pandoraAddress}`);
-    
-    // Check balance - with caching option
-    let currentBalance;
-    if (config.optimizations.cacheBalanceChecks && 
-        sessionCache.balanceChecked && 
-        (now - sessionCache.balanceCheckTime) < CACHE_DURATION) {
-      console.log('♻️ Using cached balance check');
-      currentBalance = sessionCache.cachedBalance;
-    } else {
-      currentBalance = await synapse.payments.balance(TOKENS.USDFC);
-      sessionCache.cachedBalance = currentBalance;
-      sessionCache.balanceChecked = true;
-      sessionCache.balanceCheckTime = now;
-    }
-    
-    const usdfc = synapse.payments.decimals(TOKENS.USDFC);
-    const formattedBalance = ethers.formatUnits(currentBalance, usdfc);
-    
-    console.log(`💰 Current USDFC balance: ${formattedBalance} USDFC`);
-    
-    // Deposit logic - only if needed
-    const minimumBalance = ethers.parseUnits('10', usdfc);
-    if (currentBalance < minimumBalance) {
-      const depositNeeded = minimumBalance - currentBalance;
-      console.log(`💳 Depositing ${ethers.formatUnits(depositNeeded, usdfc)} USDFC...`);
-      
-      const depositTx = await synapse.payments.deposit(depositNeeded, TOKENS.USDFC);
-      await depositTx.wait();
-      console.log(`✅ Deposit confirmed`);
-    }
-    
-    // Approve Pandora service - following tutorial pattern exactly
-    console.log(`🔐 Approving Pandora service...`);
-    
-    const rateAllowance = ethers.parseUnits('10', usdfc);
-    const lockupAllowance = ethers.parseUnits('1000', usdfc);
-    
-    const approveTx = await synapse.payments.approveService(
-      pandoraAddress,
-      rateAllowance,
-      lockupAllowance
+  if (!preflight.sufficient) {
+    // Deposit and approve if needed
+    await synapse.payments.deposit(preflight.lockupAllowanceNeeded);
+    await synapse.payments.approveService(
+      CONTRACT_ADDRESSES.PANDORA_SERVICE[FILECOIN_NETWORK],
+      preflight.rateAllowanceNeeded,
+      preflight.lockupAllowanceNeeded
     );
-    
-    await approveTx.wait();
-    
-    // Cache approval
-    sessionCache.approvalDone = true;
-    sessionCache.approvalTime = now;
-    
-    console.log(`✅ Payment setup completed successfully`);
-    return true;
-    
-  } catch (error) {
-    console.error('❌ Payment setup failed:', error);
-    throw error;
   }
+  
+  return preflight;
 }
 
 /**
- * Optimized storage service creation with reuse
+ * Upload chunk to Filecoin via Synapse SDK
  */
-async function createStorageService(synapse) {
-  // Return cached storage service if available and reuse is enabled
-  if (config.optimizations.reuseStorageService && sessionCache.storage) {
-    console.log('♻️ Reusing existing storage service');
-    return sessionCache.storage;
-  }
-  
-  console.log('🏗️ Creating new storage service...');
-  
+async function uploadChunkToFilecoin(chunkData, rtaId, chunkId, metadata) {
   try {
-    const storage = await synapse.createStorage({
-      withCDN: config.withCDN, // Always true for VibesFlow
+    console.log(`🚀 Uploading chunk ${chunkId} to Filecoin (${(chunkData.length / 1024).toFixed(1)}KB)`);
+    
+    // Initialize Synapse
+    const synapse = await createSynapseInstance();
+    
+    // Setup payments if needed
+    await ensurePaymentSetup(synapse, chunkData.length);
+    
+    // Create storage service
+    const storageService = await synapse.createStorage({
+      withCDN: true,
       callbacks: {
         onProviderSelected: (provider) => {
-          console.log(`🏪 Storage provider selected: ${provider.owner}`);
+          console.log(`Selected provider: ${provider.owner}`);
         },
         onProofSetResolved: (proofSet) => {
-          console.log(`🔗 Proof set resolved: ${proofSet.pdpVerifierProofSetId}`);
-        },
-        onProofSetCreationStarted: (txResponse, statusUrl) => {
-          console.log(`🏗️ Creating new proof set...`);
-        },
-        onProofSetCreationProgress: (status) => {
-          if (status.transactionSuccess) {
-            console.log(`⛓️ Proof set transaction confirmed`);
-          }
-          if (status.serverConfirmed) {
-            console.log(`🎉 Proof set ready (${Math.round(status.elapsedMs / 1000)}s)`);
-          }
+          console.log(`Using proof set: ${proofSet.pdpVerifierProofSetId}`);
         }
       }
     });
     
-    // Cache the storage service
-    sessionCache.storage = storage;
-    
-    console.log(`✅ Storage service created successfully`);
-    console.log(`   Proof set ID: ${storage.proofSetId}`);
-    console.log(`   Storage provider: ${storage.storageProvider.owner}`);
-    console.log(`   CDN enabled: ${config.withCDN}`);
-    
-    return storage;
-    
-  } catch (error) {
-    console.error('❌ Storage service creation failed:', error);
-    throw error;
-  }
-}
-
-/**
- * Preflight check following tutorial exactly
- */
-async function performPreflightCheck(storage, fileSize) {
-  const fileSizeMB = (fileSize / (1024 * 1024)).toFixed(2);
-  console.log(`🔍 Performing preflight check for ${fileSizeMB}MB file...`);
-  
-  try {
-    const preflight = await storage.preflightUpload(fileSize);
-    
-    // Format costs properly - following tutorial pattern
-    const costs = preflight.estimatedCost;
-    let costDisplay = 'calculating...';
-    
-    if (costs && costs.perEpoch) {
-      const decimals = 18; // USDFC decimals
-      costDisplay = `${ethers.formatUnits(costs.perEpoch, decimals)} USDFC per epoch`;
-    }
-    
-    console.log(`💰 Estimated costs: ${costDisplay}`);
-    console.log(`✅ Allowance sufficient: ${preflight.allowanceCheck.sufficient}`);
-    console.log(`📊 Selected provider: ${preflight.selectedProvider.owner}`);
-    console.log(`🔗 Selected proof set: ${preflight.selectedProofSetId}`);
-    
-    if (!preflight.allowanceCheck.sufficient) {
-      console.warn(`⚠️ Allowance issue: ${preflight.allowanceCheck.message}`);
-      throw new Error('Insufficient allowance for upload');
-    }
-    
-    return preflight;
-    
-  } catch (error) {
-    console.error('❌ Preflight check failed:', error);
-    throw error;
-  }
-}
-
-/**
- * Upload chunk with proper error handling and retries
- */
-async function uploadChunkToFilecoin(chunkData, rtaId, chunkId) {
-  console.log(`🚀 Starting Filecoin upload for chunk ${chunkId} (RTA: ${rtaId})`);
-  
-  const chunkKey = `${rtaId}_${chunkId}`;
-  uploadStatus.set(chunkKey, { status: 'initializing', progress: 0 });
-  
-  let retryCount = 0;
-  const maxRetries = config.upload.retryAttempts;
-  
-  while (retryCount <= maxRetries) {
-    try {
-      // Step 1: Initialize services
-      uploadStatus.set(chunkKey, { status: 'initializing_services', progress: 20 });
-      
-      const synapse = await createSynapseInstance();
-      await setupPayments(synapse);
-      const storage = await createStorageService(synapse);
-      
-      // Step 2: Preflight check
-      uploadStatus.set(chunkKey, { status: 'preflight_check', progress: 35 });
-      await performPreflightCheck(storage, chunkData.length);
-      
-      // Step 3: Upload with progress tracking
-      uploadStatus.set(chunkKey, { status: 'uploading', progress: 50 });
-      console.log(`📤 Uploading chunk ${chunkId} (${(chunkData.length / 1024).toFixed(1)}KB)...`);
-      
-      const uploadResult = await storage.upload(chunkData, {
+    // Upload chunk
+    const result = await storageService.upload(chunkData, {
       onUploadComplete: (commp) => {
-          console.log(`📊 Upload complete! CommP: ${commp.toString()}`);
-          uploadStatus.set(chunkKey, { status: 'upload_complete', progress: 80, commp: commp.toString() });
-        },
-        onRootAdded: () => {
-          console.log(`🌳 Root added to proof set`);
-          uploadStatus.set(chunkKey, { status: 'root_added', progress: 90 });
+        console.log(`Upload complete: ${commp.toString()}`);
+      },
+      onRootConfirmed: (rootIds) => {
+        console.log(`Root confirmed: ${rootIds.join(', ')}`);
+      }
+    });
+    
+    // Store chunk data
+    const chunkInfo = {
+      chunk_id: chunkId,
+      cid: result.commp.toString(),
+      size: chunkData.length,
+      uploadedAt: Date.now(),
+      duration: metadata.duration || 60,
+      participants: metadata.participantCount || 1,
+      owner: metadata.creator + '.testnet'
+    };
+    
+    // Add to RTA storage
+    if (!rtaStorage.has(rtaId)) {
+      rtaStorage.set(rtaId, {
+        chunks: [],
+        metadata: {
+          rta_id: rtaId,
+          creator: metadata.creator,
+          upload_timestamp: Date.now(),
+          is_complete: false
         }
       });
-      
-      // Verify upload success
-      if (!uploadResult || !uploadResult.commp) {
-        throw new Error('Upload failed - no CommP received');
-      }
-      
-      const filecoinCid = uploadResult.commp.toString(); // Fix: Convert CID to string
-      const fileSize = uploadResult.size;
-      
-      console.log(`✅ Chunk ${chunkId} uploaded successfully`);
-      console.log(`   CID: ${filecoinCid}`);
-      console.log(`   Size: ${fileSize} bytes`);
-      
-      // Generate properly formatted PDP receipt
-    const pdpReceipt = {
-      chunkId: chunkId,
-      rtaId: rtaId,
-      filecoinCid: filecoinCid,
-        proofSetId: storage.proofSetId,
-        storageProvider: storage.storageProvider.owner,
-        size: fileSize,
-        uploadedAt: new Date().toISOString(),
-        status: 'confirmed',
-        withCDN: config.withCDN,
-        network: FILECOIN_NETWORK
-      };
-      
-      // Format PDP receipt as readable string - Fix the 'object' display issue
-      const pdpReceiptString = JSON.stringify(pdpReceipt, null, 2);
-      
-      uploadStatus.set(chunkKey, { 
-        status: 'completed', 
-        progress: 100, 
-        filecoinCid,
-        pdpReceipt: pdpReceiptString 
-      });
-      
-      console.log(`🎯 Upload completed successfully for chunk ${chunkId}`);
+    }
+    
+    const rtaData = rtaStorage.get(rtaId);
+    rtaData.chunks.push(chunkInfo);
+    
+    // If final chunk, compile metadata
+    if (metadata.isFinal) {
+      await compileRTAMetadata(rtaId);
+    }
+    
+    console.log(`✅ Chunk ${chunkId} uploaded successfully: ${result.commp.toString()}`);
     
     return {
       success: true,
-      filecoinCid: filecoinCid,
-        pdpReceipt: pdpReceiptString, // Return as formatted string
-        proofSetId: storage.proofSetId,
-        storageProvider: storage.storageProvider.owner
-    };
-    
-  } catch (error) {
-      retryCount++;
-      console.error(`❌ Upload attempt ${retryCount} failed for chunk ${chunkId}:`, error.message);
-      
-      if (retryCount <= maxRetries) {
-        console.log(`🔄 Retrying upload in 5 seconds... (${retryCount}/${maxRetries})`);
-        await new Promise(resolve => setTimeout(resolve, 5000));
-      } else {
-        uploadStatus.set(chunkKey, { 
-          status: 'failed', 
-          progress: 0, 
-          error: error.message 
-        });
-        
-    return {
-      success: false,
-      error: error.message,
+      cid: result.commp.toString(),
       chunkId: chunkId,
       rtaId: rtaId
     };
-      }
-    }
+    
+  } catch (error) {
+    console.error(`❌ Failed to upload chunk ${chunkId}:`, error.message);
+    throw error;
   }
 }
 
 /**
- * Compile RTA JSON with all CIDs and PDPs
+ * Compile final RTA metadata for FilCDN retrieval
  */
-async function compileRTAJson(rtaId, filecoinUploads) {
-  console.log(`📋 Compiling ${rtaId}.json with all CIDs and PDPs...`);
+async function compileRTAMetadata(rtaId) {
+  const rtaData = rtaStorage.get(rtaId);
+  if (!rtaData) return;
   
-  const rtaJsonData = {
-    rtaId: rtaId,
-    compiledAt: new Date().toISOString(),
-    network: FILECOIN_NETWORK,
-    withCDN: config.withCDN,
-    totalChunks: Object.keys(filecoinUploads).length,
-    chunks: {},
-    metadata: {
-      storageConfig: config,
-      persistencePeriod: config.persistencePeriod,
-      version: '1.0'
-    }
+  // Sort chunks by sequence
+  rtaData.chunks.sort((a, b) => {
+    const seqA = parseInt(a.chunk_id.split('_chunk_')[1]?.split('_')[0]) || 0;
+    const seqB = parseInt(b.chunk_id.split('_chunk_')[1]?.split('_')[0]) || 0;
+    return seqA - seqB;
+  });
+  
+  // Calculate total duration
+  const totalDuration = rtaData.chunks.reduce((sum, chunk) => sum + chunk.duration, 0);
+  const formattedDuration = formatDuration(totalDuration);
+  
+  // Create metadata structure for FilCDN
+  const metadata = {
+    rta_id: rtaId,
+    creator: rtaData.metadata.creator,
+    rta_duration: formattedDuration,
+    chunks: rtaData.chunks.length,
+    is_complete: true,
+    filcdn_base: `https://${process.env.FILECOIN_ADDRESS}.calibration.filcdn.io/`,
+    first_chunk_url: rtaData.chunks.length > 0 ? `https://${process.env.FILECOIN_ADDRESS}.calibration.filcdn.io/${rtaData.chunks[0].cid}` : null,
+    last_chunk_url: rtaData.chunks.length > 0 ? `https://${process.env.FILECOIN_ADDRESS}.calibration.filcdn.io/${rtaData.chunks[rtaData.chunks.length - 1].cid}` : null,
+    upload_timestamp: rtaData.metadata.upload_timestamp,
+    synapse_proof_set_id: 1, // Will be updated with real proof set ID
+    total_size_mb: rtaData.chunks.reduce((sum, chunk) => sum + chunk.size, 0) / (1024 * 1024),
+    chunks_detail: rtaData.chunks.map(chunk => ({
+      chunk_id: chunk.chunk_id,
+      cid: chunk.cid,
+      size: chunk.size,
+      url: `https://${process.env.FILECOIN_ADDRESS}.calibration.filcdn.io/${chunk.cid}`,
+      duration: chunk.duration,
+      participants: chunk.participants,
+      owner: chunk.owner
+    }))
   };
   
-  // Add all chunk CIDs and PDPs
-  for (const [chunkId, uploadData] of Object.entries(filecoinUploads)) {
-    rtaJsonData.chunks[chunkId] = {
-      filecoinCid: uploadData.filecoinCid,
-      pdpReceipt: typeof uploadData.pdpReceipt === 'string' 
-        ? JSON.parse(uploadData.pdpReceipt) 
-        : uploadData.pdpReceipt,
-      uploadedAt: uploadData.uploadedAt,
-      size: uploadData.size || 0
-    };
-  }
-  
-  // Upload to Pinata with proper metadata
-  const rtaBuffer = Buffer.from(JSON.stringify(rtaJsonData, null, 2), 'utf8');
-  const rtaCid = await uploadMetadataToPinata(
+  // Upload metadata to Pinata
+  const metadataBuffer = Buffer.from(JSON.stringify(metadata, null, 2), 'utf8');
+  const metadataCid = await uploadToPinata(
     `${rtaId}.json`,
-    rtaBuffer,
+    metadataBuffer,
     {
       name: `VibesFlow-RTA-${rtaId}`,
       keyvalues: {
         rtaId: rtaId,
-        type: 'rta-compilation',
-        withCDN: config.withCDN.toString(),
-        network: FILECOIN_NETWORK,
-        totalChunks: Object.keys(filecoinUploads).length.toString(),
-        version: '1.0'
+        type: 'rta-metadata',
+        creator: rtaData.metadata.creator,
+        chunks: rtaData.chunks.length.toString()
       }
     }
   );
   
-  console.log(`✅ RTA JSON compiled and uploaded: ${rtaCid}`);
+  rtaData.metadata.compiledCid = metadataCid;
+  rtaData.metadata.is_complete = true;
   
-  // Cache the compilation
-  rtaCompilations.set(rtaId, {
-    rtaCid: rtaCid,
-    compiledAt: new Date().toISOString(),
-    totalChunks: Object.keys(filecoinUploads).length,
-    chunks: Object.keys(filecoinUploads)
-  });
-  
-  return rtaCid;
+  console.log(`✅ RTA metadata compiled: ${metadataCid}`);
+  return metadataCid;
 }
 
 /**
- * Queue chunk for optimized processing
+ * Format duration in MM:SS format
  */
-async function queueChunkForFilecoin(rtaId, chunkId, chunkData, metadata) {
-  console.log(`📋 Queuing chunk ${chunkId} for Filecoin upload (${(chunkData.length / 1024).toFixed(1)}KB)`);
-  
-  if (!filecoinQueue.has(rtaId)) {
-    filecoinQueue.set(rtaId, {
-      chunks: [],
-      metadata: {
-        rtaId: rtaId,
-        createdAt: Date.now(),
-        totalChunks: 0,
-        filecoinUploads: {},
-        withCDN: config.withCDN
-      }
-    });
-  }
-  
-  const rtaData = filecoinQueue.get(rtaId);
-  rtaData.chunks.push({
-    chunkId: chunkId,
-    data: chunkData,
-    metadata: metadata,
-    queuedAt: Date.now(),
-    status: 'queued'
-  });
-  
-  rtaData.metadata.totalChunks = rtaData.chunks.length;
-  console.log(`✅ Chunk ${chunkId} queued (total: ${rtaData.chunks.length})`);
-  
-  // Process with controlled concurrency
-  setImmediate(async () => {
-  await processFilecoinQueue(rtaId);
-  });
+function formatDuration(seconds) {
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
 }
 
 /**
- * Process queue with controlled concurrency
+ * Upload to Pinata
  */
-async function processFilecoinQueue(rtaId) {
-  const rtaData = filecoinQueue.get(rtaId);
-  if (!rtaData || rtaData.chunks.length === 0) return;
-  
-  console.log(`⚙️ Processing Filecoin queue for RTA ${rtaId}: ${rtaData.chunks.length} chunks`);
-  
-  const maxConcurrent = config.upload.maxConcurrentUploads;
-  const chunks = rtaData.chunks.filter(chunk => chunk.status === 'queued');
-  
-  // Process chunks in batches
-  for (let i = 0; i < chunks.length; i += maxConcurrent) {
-    const batch = chunks.slice(i, i + maxConcurrent);
-    
-    const uploadPromises = batch.map(async (chunk) => {
-      chunk.status = 'uploading';
-      
-      try {
-        const result = await uploadChunkToFilecoin(chunk.data, rtaId, chunk.chunkId);
-        
-        if (result.success) {
-          chunk.status = 'uploaded';
-          chunk.filecoinCid = result.filecoinCid;
-          chunk.pdpReceipt = result.pdpReceipt;
-          
-          // Store in metadata
-          rtaData.metadata.filecoinUploads[chunk.chunkId] = {
-            filecoinCid: result.filecoinCid,
-            pdpReceipt: result.pdpReceipt,
-            uploadedAt: Date.now(),
-            proofSetId: result.proofSetId,
-            storageProvider: result.storageProvider,
-            size: chunk.data.length
-          };
-          
-          console.log(`✅ Chunk ${chunk.chunkId} uploaded: ${result.filecoinCid}`);
-        } else {
-          chunk.status = 'failed';
-          chunk.error = result.error;
-          console.error(`❌ Failed to upload chunk ${chunk.chunkId}: ${result.error}`);
-        }
-        
-      } catch (error) {
-        chunk.status = 'failed';
-        chunk.error = error.message;
-        console.error(`❌ Error uploading chunk ${chunk.chunkId}:`, error);
-      }
-    });
-    
-    await Promise.all(uploadPromises);
-  }
-  
-  // Compile RTA JSON when all chunks are processed
-  const allProcessed = rtaData.chunks.every(chunk => 
-    chunk.status === 'uploaded' || chunk.status === 'failed'
-  );
-  
-  if (allProcessed) {
-    const successfulUploads = rtaData.chunks.filter(c => c.status === 'uploaded').length;
-    console.log(`🎯 All chunks processed for RTA ${rtaId}: ${successfulUploads}/${rtaData.chunks.length} successful`);
-    
-    if (successfulUploads > 0 && config.api.compileRTAJson) {
-      await compileRTAJson(rtaId, rtaData.metadata.filecoinUploads);
-    }
-    
-    filecoinQueue.delete(rtaId);
-  }
-}
-
-/**
- * Upload metadata to Pinata
- */
-async function uploadMetadataToPinata(filename, buffer, metadata) {
-  if (!PINATA_JWT) {
-    throw new Error('PINATA_JWT environment variable required');
-  }
-  
+async function uploadToPinata(filename, buffer, metadata) {
   const formData = new FormData();
   formData.append('file', buffer, { filename });
   formData.append('pinataMetadata', JSON.stringify(metadata));
@@ -598,84 +274,123 @@ async function uploadMetadataToPinata(filename, buffer, metadata) {
 }
 
 /**
- * Get upload status with formatted data
+ * Queue chunk for Filecoin upload
  */
-function getFilecoinUploadStatus(rtaId) {
-  const rtaData = filecoinQueue.get(rtaId);
-  const compilation = rtaCompilations.get(rtaId);
-  
-  if (!rtaData && !compilation) {
-    return { error: 'RTA not found' };
-  }
-  
-  const response = {
-    rtaId: rtaId,
-    status: rtaData ? 'processing' : 'completed',
-    totalChunks: rtaData ? rtaData.chunks.length : 0,
-    uploadedChunks: rtaData ? rtaData.chunks.filter(c => c.status === 'uploaded').length : 0,
-    failedChunks: rtaData ? rtaData.chunks.filter(c => c.status === 'failed').length : 0,
-    chunks: {},
-    compilation: compilation || null
-  };
-  
-  // Add individual chunk status
-  if (rtaData) {
-    rtaData.chunks.forEach(chunk => {
-      response.chunks[chunk.chunkId] = {
-        status: chunk.status,
-        filecoinCid: chunk.filecoinCid || null,
-        pdpReceipt: chunk.pdpReceipt || null,
-        error: chunk.error || null
-      };
-    });
-  }
-  
-  return response;
+async function queueChunkForFilecoin(rtaId, chunkId, chunkData, metadata) {
+  // Direct upload - no complex queuing needed
+  return await uploadChunkToFilecoin(chunkData, rtaId, chunkId, metadata);
 }
 
 /**
- * Get compiled RTA data
+ * Get upload status
  */
-function getCompiledRTAData(rtaId) {
-  const compilation = rtaCompilations.get(rtaId);
-  
-  if (!compilation) {
-    return { error: 'RTA compilation not found' };
+function getFilecoinUploadStatus(rtaId) {
+  const rtaData = rtaStorage.get(rtaId);
+  if (!rtaData) {
+    return { error: 'RTA not found' };
   }
   
   return {
     rtaId: rtaId,
-    rtaCid: compilation.rtaCid,
-    compiledAt: compilation.compiledAt,
-    totalChunks: compilation.totalChunks,
-    chunks: compilation.chunks,
-    downloadUrl: `https://gateway.pinata.cloud/ipfs/${compilation.rtaCid}`
+    status: rtaData.metadata.is_complete ? 'completed' : 'processing',
+    totalChunks: rtaData.chunks.length,
+    uploadedChunks: rtaData.chunks.length,
+    failedChunks: 0,
+    chunks: rtaData.chunks.reduce((acc, chunk) => {
+      acc[chunk.chunk_id] = {
+        status: 'uploaded',
+        filecoinCid: chunk.cid,
+        pdpReceipt: null // Will be populated when available
+      };
+      return acc;
+    }, {})
   };
 }
 
 /**
- * Test connection with session info
+ * Get all vibestreams for FilCDN
+ */
+async function getRealVibestreams() {
+  const vibestreams = [];
+  
+  for (const [rtaId, rtaData] of rtaStorage.entries()) {
+    if (rtaData.metadata.is_complete && rtaData.chunks.length > 0) {
+      const totalDuration = rtaData.chunks.reduce((sum, chunk) => sum + chunk.duration, 0);
+      
+      const vibestream = {
+        rta_id: rtaId,
+        creator: rtaData.metadata.creator,
+        rta_duration: formatDuration(totalDuration),
+        chunks: rtaData.chunks.length,
+        is_complete: true,
+        filcdn_base: `https://${process.env.FILECOIN_ADDRESS}.calibration.filcdn.io/`,
+        first_chunk_url: `https://${process.env.FILECOIN_ADDRESS}.calibration.filcdn.io/${rtaData.chunks[0].cid}`,
+        last_chunk_url: `https://${process.env.FILECOIN_ADDRESS}.calibration.filcdn.io/${rtaData.chunks[rtaData.chunks.length - 1].cid}`,
+        upload_timestamp: rtaData.metadata.upload_timestamp,
+        synapse_proof_set_id: 1,
+        total_size_mb: rtaData.chunks.reduce((sum, chunk) => sum + chunk.size, 0) / (1024 * 1024),
+        chunks_detail: rtaData.chunks.map(chunk => ({
+          chunk_id: chunk.chunk_id,
+          cid: chunk.cid,
+          size: chunk.size,
+          url: `https://${process.env.FILECOIN_ADDRESS}.calibration.filcdn.io/${chunk.cid}`
+        }))
+      };
+      
+      vibestreams.push(vibestream);
+    }
+  }
+  
+  return vibestreams;
+}
+
+/**
+ * API endpoint for vibestreams
+ */
+async function getVibestreamsAPI() {
+  try {
+    const vibestreams = await getRealVibestreams();
+    
+    return {
+      statusCode: 200,
+      headers: {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      },
+      body: JSON.stringify(vibestreams)
+    };
+  } catch (error) {
+    return {
+      statusCode: 500,
+      headers: {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+      },
+      body: JSON.stringify({
+        error: 'Failed to load vibestreams',
+        message: error.message
+      })
+    };
+  }
+}
+
+/**
+ * Test Synapse connection
  */
 async function testSynapseConnection() {
-  console.log('🔍 Testing Synapse SDK connection...');
-  
   try {
     const synapse = await createSynapseInstance();
-    
-    console.log('✅ Connection test successful');
-    console.log(`   Network: ${synapse.getNetwork()}`);
-    console.log(`   Signer: ${sessionCache.signerAddress}`);
-    console.log(`   Session cache: ${sessionCache.balanceChecked ? 'Active' : 'Empty'}`);
+    const signer = synapse.getSigner();
+    const address = await signer.getAddress();
     
     return {
       success: true,
-      network: synapse.getNetwork(),
-      signerAddress: sessionCache.signerAddress,
-      cacheActive: sessionCache.balanceChecked
+      network: FILECOIN_NETWORK,
+      signerAddress: address
     };
-    
   } catch (error) {
-    console.error('❌ Connection test failed:', error);
     return {
       success: false,
       error: error.message
@@ -683,119 +398,14 @@ async function testSynapseConnection() {
   }
 }
 
-async function uploadToSynapse(chunkData, metadata) {
-  const uploadId = `${metadata.rtaId}_${metadata.chunkIndex}_${Date.now()}`;
-  
-  try {
-    console.group(`🔗 Synapse Upload: ${uploadId}`);
-    console.log('📊 Metadata:', {
-      rtaId: metadata.rtaId,
-      chunkIndex: metadata.chunkIndex,
-      size: chunkData.length,
-      timestamp: new Date().toISOString()
-    });
-
-    uploadTracker.set(uploadId, {
-      status: 'uploading',
-      startTime: Date.now(),
-      metadata,
-      size: chunkData.length
-    });
-
-    // Initialize storage client
-    const client = await storage.create({
-      rpc: process.env.FILECOIN_NETWORK || 'https://calibration.filfox.info/rpc/v1',
-      privateKey: process.env.FILECOIN_PRIVATE_KEY,
-      network: 'calibration'
-    });
-
-    console.log('✅ Synapse client initialized');
-    
-    // Upload with detailed progress tracking
-    const result = await client.upload(chunkData, {
-      name: `${metadata.rtaId}_chunk_${metadata.chunkIndex}`,
-      metadata: {
-        creator: metadata.creator,
-        rtaId: metadata.rtaId,
-        chunkIndex: metadata.chunkIndex,
-        uploadTime: Date.now()
-      }
-    });
-
-    // Update tracker with success
-    uploadTracker.set(uploadId, {
-      ...uploadTracker.get(uploadId),
-      status: 'completed',
-      endTime: Date.now(),
-      cid: result.cid,
-      dealId: result.dealId,
-      result
-    });
-
-    console.log('🎉 Upload completed:', {
-      cid: result.cid,
-      dealId: result.dealId,
-      duration: Date.now() - uploadTracker.get(uploadId).startTime
-    });
-    console.groupEnd();
-
-    return {
-      success: true,
-      uploadId,
-      cid: result.cid,
-      dealId: result.dealId,
-      result
-    };
-
-  } catch (error) {
-    uploadTracker.set(uploadId, {
-      ...uploadTracker.get(uploadId),
-      status: 'failed',
-      endTime: Date.now(),
-      error: error.message
-    });
-
-    console.error('❌ Synapse upload failed:', {
-      uploadId,
-      error: error.message,
-      stack: error.stack
-    });
-    console.groupEnd();
-
-    throw error;
-  }
-}
-
-// Add status retrieval functions
-function getUploadStatus(uploadId) {
-  return uploadTracker.get(uploadId) || null;
-}
-
-function getAllUploads() {
-  return Array.from(uploadTracker.entries()).map(([id, data]) => ({
-    uploadId: id,
-    ...data
-  }));
-}
-
-function getUploadsByStatus(status) {
-  return getAllUploads().filter(upload => upload.status === status);
-}
-
 module.exports = {
-  initializeSynapseSDK,
   createSynapseInstance,
-  setupPayments,
-  createStorageService,
-  performPreflightCheck,
+  ensurePaymentSetup,
   uploadChunkToFilecoin,
   queueChunkForFilecoin,
-  processFilecoinQueue,
   getFilecoinUploadStatus,
-  getCompiledRTAData,
+  getRealVibestreams,
+  getVibestreamsAPI,
   testSynapseConnection,
-  uploadToSynapse,
-  getUploadStatus,
-  getAllUploads,
-  getUploadsByStatus
+  compileRTAMetadata
 }; 

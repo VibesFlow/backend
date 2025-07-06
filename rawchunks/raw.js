@@ -24,12 +24,14 @@ const BUCKET_NAME = process.env.BUCKET_NAME || 'vibesflow-raw-chunks';
 // Pinata configuration
 const PINATA_JWT = process.env.PINATA_JWT;
 
-// Import Filecoin service
+// Import Filecoin service and API functions from synapseSDK
 const {
   queueChunkForFilecoin,
   getFilecoinUploadStatus,
   getCompiledRTAData,
-  testSynapseConnection
+  testSynapseConnection,
+  getVibestreamsAPI,
+  downloadChunkAPI
 } = require('./synapseSDK');
 
 // Initialize AWS clients
@@ -130,7 +132,6 @@ function addChunkToMetadata(rtaId, chunkData) {
   }
   
   metadata.lastUpdated = Date.now();
-  console.log(`📊 Updated metadata for RTA ${rtaId}: ${metadata.totalChunks} chunks`);
 }
 
 // Upload final metadata to Pinata
@@ -162,8 +163,6 @@ async function uploadFinalMetadata(rtaId) {
       }
     );
     
-    console.log(`📋 Final metadata uploaded for RTA ${rtaId}: ${metadataCid}`);
-    
     // Clean up from memory
     metadataStore.delete(rtaId);
     
@@ -188,8 +187,6 @@ exports.uploadChunk = async (event) => {
   };
 
   try {
-    console.log('📡 Received audio chunk upload request');
-    
     // Extract metadata from headers
     const chunkId = event.headers['x-chunk-id'] || event.headers['X-Chunk-Id'];
     const rtaId = event.headers['x-rta-id'] || event.headers['X-Rta-Id'];
@@ -216,10 +213,6 @@ exports.uploadChunk = async (event) => {
     // Extract compressed audio data
     let compressedAudioData;
     try {
-      console.log('🔍 Event body type:', typeof event.body);
-      console.log('🔍 Event body length:', event.body ? event.body.length : 'null');
-      console.log('🔍 Event body preview:', event.body ? event.body.substring(0, 100) : 'null');
-      
       let bodyText = event.body;
       
       // Check if the body is base64 encoded (API Gateway sometimes does this)
@@ -228,17 +221,14 @@ exports.uploadChunk = async (event) => {
           // Try to decode from base64 first
           const decoded = Buffer.from(bodyText, 'base64').toString('utf8');
           if (decoded.startsWith('{') && decoded.endsWith('}')) {
-            console.log('🔍 Detected base64 encoded body, decoding...');
             bodyText = decoded;
           }
         } catch (base64Error) {
           // If base64 decoding fails, use original body
-          console.log('🔍 Body is not base64 encoded, using as-is');
         }
       }
       
       const requestBody = JSON.parse(bodyText);
-      console.log('🔍 Parsed body keys:', Object.keys(requestBody));
       
       if (requestBody.audioData) {
         compressedAudioData = Buffer.from(requestBody.audioData, 'base64');
@@ -267,14 +257,6 @@ exports.uploadChunk = async (event) => {
       };
     }
     
-    console.log(`🎵 Processing chunk ${chunkId} for RTA ${rtaId}`);
-    console.log(`📦 Compressed audio: ${(compressedAudioData.length / 1024).toFixed(1)}KB (${audioFormat})`);
-    console.log(`👥 Participants: ${participantCount}`);
-    
-    // Temporarily skip WAV conversion and upload compressed WebM directly
-    // TODO: Fix FFmpeg layer configuration for proper WAV conversion
-    console.log(`⚠️ Skipping WAV conversion (FFmpeg layer issue), uploading compressed WebM directly`);
-    
     // Upload compressed WebM file to Pinata
     let audioCid;
     try {
@@ -290,13 +272,12 @@ exports.uploadChunk = async (event) => {
             chunkId: chunkId,
             creator: creator || 'unknown',
             timestamp: chunkTimestamp || Date.now().toString(),
-            participantCount: participantCount, // Include participant count in metadata
+            participantCount: participantCount,
             type: 'audio-chunk',
             format: 'webm-opus'
           }
         }
       );
-      console.log(`✅ WebM file uploaded to Pinata: ${audioCid}`);
     } catch (uploadError) {
       console.error('❌ Pinata upload failed:', uploadError);
       return {
@@ -306,26 +287,22 @@ exports.uploadChunk = async (event) => {
       };
     }
     
-    // Add chunk data to progressive metadata - including participant count
+    // Add chunk data to progressive metadata
     const chunkMetadata = {
       chunkId: chunkId,
       sequence: parseInt(chunkId.split('_chunk_')[1]?.split('_')[0]) || 0,
       timestamp: parseInt(chunkTimestamp) || Date.now(),
       wavCid: audioCid,
-      wavSize: 0, // This will be updated by the chunker worker
+      wavSize: 0,
       originalCompressedSize: compressedAudioData.length,
       originalRawSize: parseInt(originalSize) || null,
       sampleRate: parseInt(sampleRate),
       channels: parseInt(channels),
       bitDepth: parseInt(bitDepth),
-      participantCount: parseInt(participantCount), // Track participant count for this chunk
-      duration: 60, // seconds - will be updated by chunker worker if different
+      participantCount: parseInt(participantCount),
+      duration: 60,
       isFinal: isFinal === 'true',
       uploadedAt: Date.now(),
-      // Fields to be added by workers:
-      // owner: null, // Will be added by chunker worker (VRF-raffled)
-      // chunkCID_onSynapse: null, // Will be added by dispatcher worker
-      // chunkPDP_onSynapse: null  // Will be added by dispatcher worker
     };
     
     addChunkToMetadata(rtaId, chunkMetadata);
@@ -333,9 +310,7 @@ exports.uploadChunk = async (event) => {
     // Queue chunk for Filecoin upload via Synapse SDK
     let synapseStatus = null;
     try {
-      console.log(`🚀 Queuing chunk ${chunkId} for Filecoin upload...`);
       await queueChunkForFilecoin(rtaId, chunkId, compressedAudioData, chunkMetadata);
-      console.log(`✅ Chunk ${chunkId} queued for Filecoin upload successfully`);
       synapseStatus = {
         success: true,
         message: `Chunk ${chunkId} queued for Filecoin upload successfully`,
@@ -353,7 +328,6 @@ exports.uploadChunk = async (event) => {
         error: filecoinError.message,
         timestamp: Date.now()
       };
-      // Don't fail the main upload - Filecoin is an additional service
     }
     
     // If this is the final chunk, upload the complete metadata
@@ -361,10 +335,8 @@ exports.uploadChunk = async (event) => {
     if (isFinal === 'true') {
       try {
         metadataCid = await uploadFinalMetadata(rtaId);
-        console.log(`🎯 Final metadata uploaded for RTA ${rtaId}: ${metadataCid}`);
       } catch (metadataError) {
         console.error('⚠️ Failed to upload final metadata:', metadataError);
-        // Don't fail the request, metadata upload is not critical for the chunk upload itself
       }
     }
     
@@ -374,8 +346,8 @@ exports.uploadChunk = async (event) => {
       chunkId,
       rtaId,
       wavCid: audioCid,
-      wavSize: 0, // This will be updated by the chunker worker
-      participantCount: parseInt(participantCount), // Include participant count for worker processing
+      wavSize: 0,
+      participantCount: parseInt(participantCount),
       metadata: chunkMetadata,
       isFinal: isFinal === 'true',
       queuedAt: Date.now()
@@ -395,13 +367,9 @@ exports.uploadChunk = async (event) => {
             isFinal: { DataType: 'String', StringValue: isFinal }
           }
         }));
-        console.log(`🚀 Queued WAV chunk for worker processing: ${chunkId} (participants: ${participantCount})`);
-      } else {
-        console.log(`🔧 No queue configured, skipping worker notification`);
       }
     } catch (queueError) {
       console.error('❌ Queue error:', queueError);
-      // Don't fail the request - chunk is stored successfully
     }
     
     return {
@@ -412,14 +380,14 @@ exports.uploadChunk = async (event) => {
         chunkId,
         rtaId,
         wavCid: audioCid,
-        wavSize: 0, // This will be updated by the chunker worker
+        wavSize: 0,
         originalCompressedSize: compressedAudioData.length,
-        participantCount: parseInt(participantCount), // Include in response
+        participantCount: parseInt(participantCount),
         compressionRatio: ((compressedAudioData.length / (parseInt(originalSize) || compressedAudioData.length)) * 100).toFixed(1) + '%',
         isFinal: isFinal === 'true',
         metadataCid: metadataCid,
         message: `Compressed WebM chunk uploaded successfully${isFinal === 'true' ? ' (final chunk, metadata finalized)' : ''} - ${participantCount} participants active`,
-        synapseStatus: synapseStatus // Include Synapse operation status
+        synapseStatus: synapseStatus
       })
     };
     
@@ -483,38 +451,45 @@ exports.options = async () => {
 /**
  * Health check endpoint
  */
-exports.health = async () => {
-  const config = {
-    pinata: PINATA_JWT ? 'configured' : 'missing',
-    ffmpeg: 'enabled',
-    queue: QUEUE_URL ? 'configured' : 'missing',
-    runtime: 'nodejs20.x',
-    audioConversion: 'webm-opus-to-wav',
-    metadataHandling: 'progressive-separate-files',
-    participantTracking: 'enabled'
-  };
-  
-  return {
-    statusCode: 200,
-    headers: { 
-      'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*'
-    },
-    body: JSON.stringify({ 
-      status: 'healthy',
-      service: 'rawchunks-wav-converter',
-      timestamp: Date.now(),
-      config
-    })
-  };
+exports.health = async (event, context) => {
+  try {
+    // Test Synapse SDK connection
+    const synapseTest = await testSynapseConnection();
+    
+    return {
+      statusCode: 200,
+      headers: {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+      },
+      body: JSON.stringify({
+        status: 'healthy',
+        timestamp: new Date().toISOString(),
+        service: 'vibesflow-rawchunks-synapse',
+        network: 'calibration',
+        synapse: synapseTest
+      })
+    };
+  } catch (error) {
+    return {
+      statusCode: 500,
+      headers: {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+      },
+      body: JSON.stringify({
+        status: 'unhealthy',
+        error: error.message,
+        timestamp: new Date().toISOString()
+      })
+    };
+  }
 };
 
 /**
  * Filecoin upload status endpoint
  */
 exports.filecoinStatus = async (event) => {
-  console.log('📊 Filecoin status request received');
-
   const corsHeaders = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'Content-Type',
@@ -522,8 +497,13 @@ exports.filecoinStatus = async (event) => {
     'Content-Type': 'application/json'
   };
 
-  if (event.httpMethod === 'OPTIONS') {
-    return { statusCode: 200, headers, body: JSON.stringify({ message: 'CORS preflight successful' }) };
+  // Handle preflight requests
+  if (event.httpMethod === 'OPTIONS' || event.requestContext?.http?.method === 'OPTIONS') {
+    return { 
+      statusCode: 200, 
+      headers: corsHeaders, 
+      body: JSON.stringify({ message: 'CORS preflight successful' }) 
+    };
   }
 
   try {
@@ -532,20 +512,16 @@ exports.filecoinStatus = async (event) => {
     if (!rtaId) {
       return {
         statusCode: 400,
-        headers,
+        headers: corsHeaders,
         body: JSON.stringify({ error: 'rtaId parameter required' })
       };
     }
-
-    console.log(`📈 Getting Filecoin status for RTA: ${rtaId}`);
     
     const status = getFilecoinUploadStatus(rtaId);
     
-    console.log('✅ Status retrieved:', status);
-    
     return {
       statusCode: 200,
-      headers,
+      headers: corsHeaders,
       body: JSON.stringify(status)
     };
 
@@ -554,7 +530,7 @@ exports.filecoinStatus = async (event) => {
     
     return {
       statusCode: 500,
-      headers,
+      headers: corsHeaders,
       body: JSON.stringify({
         error: 'Failed to get status',
         message: error.message
@@ -567,8 +543,6 @@ exports.filecoinStatus = async (event) => {
  * Process Filecoin upload queue endpoint
  */
 exports.processFilecoinQueue = async (event) => {
-  console.log('⚙️ Manual Filecoin queue processing triggered');
-
   const corsHeaders = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'Content-Type',
@@ -577,7 +551,7 @@ exports.processFilecoinQueue = async (event) => {
   };
 
   if (event.httpMethod === 'OPTIONS') {
-    return { statusCode: 200, headers, body: JSON.stringify({ message: 'CORS preflight successful' }) };
+    return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ message: 'CORS preflight successful' }) };
   }
 
   try {
@@ -587,17 +561,12 @@ exports.processFilecoinQueue = async (event) => {
     const rtaId = body.rtaId || event.pathParameters?.rtaId;
 
     if (rtaId) {
-      console.log(`🎯 Processing queue for specific RTA: ${rtaId}`);
       await processFilecoinQueue(rtaId);
-    } else {
-      console.log('🌐 Processing all queued RTAs...');
-      // Process all RTAs in queue - implementation depends on queue structure
-      console.log('⚠️ Global queue processing not implemented yet');
     }
 
     return {
       statusCode: 200,
-      headers,
+      headers: corsHeaders,
       body: JSON.stringify({
         success: true,
         message: rtaId ? `Queue processed for RTA ${rtaId}` : 'Global queue processing initiated',
@@ -610,7 +579,7 @@ exports.processFilecoinQueue = async (event) => {
     
     return {
       statusCode: 500,
-      headers,
+      headers: corsHeaders,
       body: JSON.stringify({
         error: 'Queue processing failed',
         message: error.message
@@ -680,8 +649,6 @@ exports.updateChunkMetadata = async (event) => {
 
 // Test Synapse SDK connection
 exports.testFilecoinConnection = async (event) => {
-  console.log('🧪 Testing Filecoin/Synapse connection');
-
   const headers = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'Content-Type',
@@ -752,8 +719,6 @@ async function uploadMetadataToPinata(filename, buffer, metadata) {
  * Get compiled RTA JSON with all CIDs and PDPs
  */
 exports.getRTAData = async (event) => {
-  console.log('📋 RTA data request received');
-
   const corsHeaders = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'Content-Type',
@@ -775,12 +740,8 @@ exports.getRTAData = async (event) => {
         body: JSON.stringify({ error: 'rtaId parameter required' })
       };
     }
-
-    console.log(`📊 Getting compiled RTA data for: ${rtaId}`);
     
     const rtaData = getCompiledRTAData(rtaId);
-    
-    console.log('✅ RTA data retrieved:', rtaData);
     
     return {
       statusCode: 200,
@@ -806,8 +767,6 @@ exports.getRTAData = async (event) => {
  * Get all CIDs and PDPs for individual chunks in an RTA
  */
 exports.getChunkCIDs = async (event) => {
-  console.log('🔗 Chunk CIDs request received');
-
   const corsHeaders = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'Content-Type',
@@ -830,8 +789,6 @@ exports.getChunkCIDs = async (event) => {
         body: JSON.stringify({ error: 'rtaId parameter required' })
       };
     }
-
-    console.log(`🔍 Getting chunk CIDs for RTA: ${rtaId}${chunkId ? `, chunk: ${chunkId}` : ''}`);
     
     const status = getFilecoinUploadStatus(rtaId);
     
@@ -871,8 +828,6 @@ exports.getChunkCIDs = async (event) => {
       };
     });
     
-    console.log('✅ Chunk CIDs retrieved for RTA:', rtaId);
-    
     return {
       statusCode: 200,
       headers: corsHeaders,
@@ -892,6 +847,111 @@ exports.getChunkCIDs = async (event) => {
       headers: corsHeaders,
       body: JSON.stringify({
         error: 'Failed to get chunk CIDs',
+        message: error.message
+      })
+    };
+  }
+};
+
+/**
+ * Get vibestreams using real Synapse SDK data
+ */
+exports.getVibestreams = async (event, context) => {
+  const corsHeaders = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    'Content-Type': 'application/json'
+  };
+
+  // Handle preflight requests
+  if (event.httpMethod === 'OPTIONS' || event.requestContext?.http?.method === 'OPTIONS') {
+    return { 
+      statusCode: 200, 
+      headers: corsHeaders, 
+      body: JSON.stringify({ message: 'CORS preflight successful' }) 
+    };
+  }
+
+  try {
+    const { getVibestreams } = require('./synapseSDK');
+    const vibestreams = await getVibestreams();
+    
+    return {
+      statusCode: 200,
+      headers: corsHeaders,
+      body: JSON.stringify(vibestreams)
+    };
+  } catch (error) {
+    console.error('❌ Failed to get vibestreams:', error);
+    
+    return {
+      statusCode: 500,
+      headers: corsHeaders,
+      body: JSON.stringify({
+        error: 'Failed to load vibestreams',
+        message: error.message
+      })
+    };
+  }
+};
+
+/**
+ * Download chunk using real Synapse SDK
+ */
+exports.downloadChunk = async (event, context) => {
+  const corsHeaders = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+  };
+
+  // Handle preflight requests
+  if (event.httpMethod === 'OPTIONS' || event.requestContext?.http?.method === 'OPTIONS') {
+    return { 
+      statusCode: 200, 
+      headers: corsHeaders, 
+      body: JSON.stringify({ message: 'CORS preflight successful' }) 
+    };
+  }
+
+  const cid = event.pathParameters?.cid;
+  
+  if (!cid) {
+    return {
+      statusCode: 400,
+      headers: {
+        'Content-Type': 'application/json',
+        ...corsHeaders,
+      },
+      body: JSON.stringify({
+        error: 'Missing CID parameter',
+        message: 'CID is required in the path'
+      })
+    };
+  }
+  
+  try {
+    // For now, redirect to FilCDN URL
+    const filcdnUrl = `https://${process.env.FILECOIN_ADDRESS}.calibration.filcdn.io/${cid}`;
+    
+    return {
+      statusCode: 302,
+      headers: {
+        'Location': filcdnUrl,
+        ...corsHeaders
+      },
+      body: ''
+    };
+  } catch (error) {
+    return {
+      statusCode: 500,
+      headers: {
+        'Content-Type': 'application/json',
+        ...corsHeaders,
+      },
+      body: JSON.stringify({
+        error: 'Failed to download chunk',
         message: error.message
       })
     };

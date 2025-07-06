@@ -19,7 +19,34 @@ const https = require('https');
 const fs = require('fs');
 const http = require('http');
 const url = require('url');
-const CONFIG = require('./config');
+
+// Load environment variables first
+const dotenv = require('dotenv');
+dotenv.config();
+
+const config = require('./config');
+
+// Use config object instead of direct import
+const CONFIG = {
+  rpc: config.rpc,
+  network: config.network,
+  walletAddress: config.walletAddress,
+  calibrationAddress: config.calibrationAddress,
+  privateKey: config.privateKey
+};
+
+// Validate configuration on startup
+console.log('🔧 Loading configuration...');
+console.log(`📡 RPC: ${CONFIG.rpc}`);
+console.log(`🌐 Network: ${CONFIG.network}`);
+console.log(`💰 Wallet Address: ${CONFIG.walletAddress}`);
+console.log(`🎯 Calibration Address: ${CONFIG.calibrationAddress}`);
+
+if (!CONFIG.walletAddress) {
+  console.error('❌ ERROR: Wallet address is undefined!');
+  console.error('💡 Please check your .env file contains FILECOIN_ADDRESS');
+  process.exit(1);
+}
 
 // Analytics endpoints
 const ANALYTICS = {
@@ -28,6 +55,14 @@ const ANALYTICS = {
   filfox: 'https://calibration.filfox.info/api/v1',
   beryx: 'https://api.beryx.zondax.ch/v1/search/fil/calibration'
 };
+
+// Import API functions from synapseSDK
+const {
+  getVibestreamsAPI,
+  downloadChunkAPI,
+  testSynapseConnection,
+  initializeSynapseSDK
+} = require('./synapseSDK');
 
 /**
  * FilCDN Integration Class with improved rta_id and chunk_id organization
