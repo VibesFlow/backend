@@ -188,7 +188,7 @@ async function setupPayments(synapse) {
 /**
  * Create or get storage service for RTA
  */
-async function getStorageServiceForRTA(rtaId, synapse) {
+async function getStorageServiceForRTA(rtaId, synapse, creator = null) {
   try {
     // Check session cache first
     if (sessionStorageServices.has(rtaId)) {
@@ -238,6 +238,7 @@ async function getStorageServiceForRTA(rtaId, synapse) {
       const initialMetadata = {
         rta_id: rtaId,
         upload_timestamp: Date.now(),
+        creator: creator || 'unknown',
         is_complete: false,
         proof_set_id: storageService.proofSetId,
         storage_provider: storageService.storageProvider,
@@ -269,7 +270,7 @@ async function uploadChunkToFilecoin(chunkData, rtaId, chunkId, metadata) {
     const synapse = await createSynapseInstance();
     
     // Get or create storage service for this RTA
-    const storageService = await getStorageServiceForRTA(rtaId, synapse);
+    const storageService = await getStorageServiceForRTA(rtaId, synapse, metadata.creator);
     
     // Run preflight check
     console.log(`🔍 Running preflight check for chunk ${chunkId}...`);

@@ -144,7 +144,7 @@ class PersistenceService {
         return false;
       }
 
-      const updateExpression = 'SET is_complete = :isComplete, completed_at = :completedAt, last_updated = :lastUpdated';
+      let updateExpression = 'SET is_complete = :isComplete, completed_at = :completedAt, last_updated = :lastUpdated';
       const expressionAttributeValues = {
         ':isComplete': true,
         ':completedAt': Date.now(),
