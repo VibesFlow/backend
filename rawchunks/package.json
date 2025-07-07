@@ -1,37 +1,23 @@
 {
   "name": "rawchunks",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "app.js",
   "scripts": {
-    "test": "node test.js",
-    "start": "node local.js",
-    "dev": "node local.js",
-    "deploy": "node deploy.js",
-    "deploy:dev": "npx serverless deploy --stage dev",
-    "deploy:prod": "npx serverless deploy --stage prod",
-    "logs": "npx serverless logs -f uploadChunk --tail",
-    "remove": "npx serverless remove",
-    "deals": "export $(cat .env | grep -v '#' | xargs) && node deals.js",
-    "deals:status": "export $(cat .env | grep -v '#' | xargs) && node deals.js status",
-    "deals:watch": "export $(cat .env | grep -v '#' | xargs) && node deals.js watch",
-    "deals:filcdn": "export $(cat .env | grep -v '#' | xargs) && node deals.js filcdn"
+    "start": "node app.js",
+    "dev": "nodemon app.js",
+    "test": "node test-synapse-direct.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "",
+  "description": "VibesFlow EC2 Backend with Synapse SDK",
   "devDependencies": {
-    "serverless": "^4.17.1",
-    "serverless-offline": "^14.4.0"
+    "nodemon": "^3.0.1"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.470.0",
-    "@aws-sdk/client-sqs": "^3.470.0",
+    "@aws-sdk/client-dynamodb": "^3.470.0",
+    "@aws-sdk/lib-dynamodb": "^3.470.0",
     "@filoz/synapse-sdk": "^0.18.0",
-    "@google/genai": "^1.8.0",
-    "chalk": "^5.4.1",
-    "cli-table3": "^0.6.5",
-    "commander": "^14.0.0",
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
     "ethers": "^6.15.0",

@@ -89,7 +89,7 @@ class FilCDNMonitor {
     
     try {
       console.log(`🌐 Testing FilCDN retrieval: ${filcdnUrl}`);
-      await this.makeHttpRequest(filcdnUrl, 'HEAD');
+      await this.makeHttpRequest(filcdnUrl, 'GET');
       console.log(`✅ FilCDN retrieval successful for: ${cid}`);
       return { success: true, url: filcdnUrl };
     } catch (error) {
