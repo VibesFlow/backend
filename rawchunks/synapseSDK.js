@@ -269,8 +269,49 @@ async function uploadChunkToFilecoin(chunkData, rtaId, chunkId, metadata) {
     // Initialize Synapse instance
     const synapse = await createSynapseInstance();
     
+    // Log detailed wallet and service status for frontend
+    console.log('💰 Checking wallet balances and Pandora service status...');
+    const { TOKENS } = await initializeSynapseSDK();
+    
+    // Get current balances for logging
+    const filBalance = await synapse.payments.walletBalance(); // FIL balance
+    const usdfcBalance = await synapse.payments.walletBalance(TOKENS.USDFC); // USDFC balance
+    const contractBalance = await synapse.payments.balance(TOKENS.USDFC); // Contract balance
+    
+    const walletStatus = {
+      FIL: ethers.formatEther(filBalance),
+      USDFC_Wallet: ethers.formatEther(usdfcBalance),
+      USDFC_Contract: ethers.formatEther(contractBalance),
+      sufficientFunds: contractBalance > ethers.parseEther('10') // Basic check
+    };
+    
+    console.log('📊 Current Balances:', walletStatus);
+    
+    // Check Pandora service approval
+    const network = synapse.getNetwork();
+    const { CONTRACT_ADDRESSES } = await initializeSynapseSDK();
+    const pandoraAddress = CONTRACT_ADDRESSES.PANDORA_SERVICE[network];
+    const serviceApproval = await synapse.payments.serviceApproval(pandoraAddress, TOKENS.USDFC);
+    
+    const pandoraStatus = {
+      address: pandoraAddress,
+      isApproved: serviceApproval.isApproved,
+      rateAllowance: ethers.formatEther(serviceApproval.rateAllowance),
+      lockupAllowance: ethers.formatEther(serviceApproval.lockupAllowance)
+    };
+    
+    console.log('🏛️ Pandora Service Status:', pandoraStatus);
+    
     // Get or create storage service for this RTA
     const storageService = await getStorageServiceForRTA(rtaId, synapse, metadata.creator);
+    
+    const proofSetDetails = {
+      proofSetId: storageService.proofSetId,
+      provider: storageService.storageProvider,
+      status: 'active'
+    };
+    
+    console.log(`📋 Proof Set Details:`, proofSetDetails);
     
     // Run preflight check
     console.log(`🔍 Running preflight check for chunk ${chunkId}...`);
@@ -387,7 +428,16 @@ async function uploadChunkToFilecoin(chunkData, rtaId, chunkId, metadata) {
       chunkId: chunkId,
       rtaId: rtaId,
       provider: 'synapse-filecoin',
-      confirmed: rootConfirmed
+      confirmed: rootConfirmed,
+      // Additional status for frontend logging
+      uploadId: `${rtaId}_${chunkId}`,
+      queuePosition: 1,
+      estimatedProcessTime: '5-15 minutes',
+      walletStatus: walletStatus,
+      pandoraStatus: pandoraStatus,
+      proofSetId: proofSetDetails.proofSetId,
+      proofSetStatus: proofSetDetails.status,
+      storageProvider: proofSetDetails.provider
     };
     
   } catch (error) {

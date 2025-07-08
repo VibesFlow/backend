@@ -117,7 +117,12 @@ app.post('/upload', async (req, res) => {
     
     if (!chunkId || !rtaId || !creator) {
       return res.status(400).json({ 
-        error: 'Missing required headers: X-Chunk-Id, X-Rta-Id, X-Creator' 
+        error: 'Missing required headers: X-Chunk-Id, X-Rta-Id, X-Creator',
+        synapseStatus: {
+          success: false,
+          message: 'Missing required headers',
+          error: 'Missing required headers: X-Chunk-Id, X-Rta-Id, X-Creator'
+        }
       });
     }
     
@@ -131,16 +136,111 @@ app.post('/upload', async (req, res) => {
     } catch (e) {
       return res.status(400).json({ 
         error: 'Invalid request body or missing audioData',
-        details: e.message
+        details: e.message,
+        synapseStatus: {
+          success: false,
+          message: 'Invalid audio data',
+          error: e.message
+        }
       });
     }
     
     if (!audioData || audioData.length === 0) {
-      return res.status(400).json({ error: 'No audio data received' });
+      return res.status(400).json({ 
+        error: 'No audio data received',
+        synapseStatus: {
+          success: false,
+          message: 'No audio data received',
+          error: 'Audio buffer is empty'
+        }
+      });
+    }
+    
+    console.log(`🔍 Getting Synapse status for ${chunkId}...`);
+    let detailedSynapseStatus;
+    
+    try {
+      // Get Synapse connection and status
+      const { createSynapseInstance } = require('./synapseSDK');
+      const synapse = await createSynapseInstance();
+      
+      // Get wallet and service status for frontend logging
+      const { TOKENS, CONTRACT_ADDRESSES } = await (async () => {
+        const synapseModule = await import('@filoz/synapse-sdk');
+        return {
+          TOKENS: synapseModule.TOKENS,
+          CONTRACT_ADDRESSES: synapseModule.CONTRACT_ADDRESSES
+        };
+      })();
+      
+      const ethers = require('ethers');
+      
+      // Get current balances
+      const filBalance = await synapse.payments.walletBalance();
+      const usdfcBalance = await synapse.payments.walletBalance(TOKENS.USDFC);
+      const contractBalance = await synapse.payments.balance(TOKENS.USDFC);
+      
+      const walletStatus = {
+        FIL: ethers.formatEther(filBalance),
+        USDFC_Wallet: ethers.formatEther(usdfcBalance),
+        USDFC_Contract: ethers.formatEther(contractBalance),
+        sufficientFunds: contractBalance > ethers.parseEther('10')
+      };
+      
+      // Check Pandora service approval
+      const network = synapse.getNetwork();
+      const pandoraAddress = CONTRACT_ADDRESSES.PANDORA_SERVICE[network];
+      const serviceApproval = await synapse.payments.serviceApproval(pandoraAddress, TOKENS.USDFC);
+      
+      const pandoraStatus = {
+        address: pandoraAddress,
+        isApproved: serviceApproval.isApproved,
+        rateAllowance: ethers.formatEther(serviceApproval.rateAllowance),
+        lockupAllowance: ethers.formatEther(serviceApproval.lockupAllowance)
+      };
+      
+      // Get proof set info
+      const { getStorageServiceForRTA } = require('./synapseSDK');
+      const storageService = await getStorageServiceForRTA(rtaId, synapse, creator);
+      
+      detailedSynapseStatus = {
+        success: true,
+        message: `Chunk ${chunkId} queued for Filecoin storage via Synapse SDK`,
+        uploadId: `${rtaId}_${chunkId}_${Date.now()}`,
+        queuePosition: 1,
+        estimatedProcessTime: '5-15 minutes',
+        walletStatus: walletStatus,
+        pandoraStatus: pandoraStatus,
+        proofSetId: storageService.proofSetId,
+        proofSetStatus: 'active',
+        storageProvider: storageService.storageProvider,
+        statusEndpoint: `/filecoin/status/${rtaId}`,
+        async: true
+      };
+      
+      console.log(`✅ Synapse status retrieved for ${chunkId}:`, {
+        proofSet: storageService.proofSetId,
+        provider: storageService.storageProvider,
+        pandoraApproved: pandoraStatus.isApproved,
+        sufficientFunds: walletStatus.sufficientFunds
+      });
+      
+    } catch (statusError) {
+      console.warn(`⚠️ Failed to get detailed Synapse status for ${chunkId}:`, statusError.message);
+      detailedSynapseStatus = {
+        success: true,
+        message: `Chunk ${chunkId} queued for Filecoin storage`,
+        uploadId: `${rtaId}_${chunkId}_${Date.now()}`,
+        queuePosition: 1,
+        estimatedProcessTime: '5-15 minutes',
+        statusEndpoint: `/filecoin/status/${rtaId}`,
+        async: true,
+        statusError: statusError.message
+      };
     }
     
     // Create upload ID for async tracking
-    const uploadId = `${rtaId}_${chunkId}_${Date.now()}`;
+    const uploadId = detailedSynapseStatus.uploadId;
     
     // Mark as processing
     asyncUploadQueue.set(uploadId, {
@@ -151,7 +251,7 @@ app.post('/upload', async (req, res) => {
       size: audioData.length
     });
     
-    // Return immediately with upload ID
+    // Return frontend-expected format with detailed Synapse status
     res.json({
       success: true,
       upload_id: uploadId,
@@ -162,7 +262,9 @@ app.post('/upload', async (req, res) => {
       isFinal: isFinal === 'true',
       message: `Chunk ${chunkId} queued for async Synapse upload`,
       upload_status: 'processing_async',
-      status_url: `/upload/status/${uploadId}`
+      status_url: `/upload/status/${uploadId}`,
+      
+      synapseStatus: detailedSynapseStatus
     });
     
     // Process upload asynchronously
@@ -197,7 +299,13 @@ app.post('/upload', async (req, res) => {
           status: 'completed',
           result: result,
           processingTime: processingTime,
-          completedAt: Date.now()
+          completedAt: Date.now(),
+          synapseResult: {
+            success: result.success,
+            cid: result.cid,
+            provider: result.provider,
+            confirmed: result.confirmed || false
+          }
         });
         
       } catch (error) {
@@ -209,7 +317,11 @@ app.post('/upload', async (req, res) => {
           status: 'failed',
           error: error.message,
           processingTime: processingTime,
-          failedAt: Date.now()
+          failedAt: Date.now(),
+          synapseResult: {
+            success: false,
+            error: error.message
+          }
         });
       }
     });
@@ -218,7 +330,12 @@ app.post('/upload', async (req, res) => {
     console.error('❌ Upload endpoint error:', error);
     res.status(500).json({ 
       error: 'Internal server error', 
-      details: error.message 
+      details: error.message,
+      synapseStatus: {
+        success: false,
+        message: 'Internal server error',
+        error: error.message
+      }
     });
   }
 });
