@@ -22,9 +22,64 @@ const HOST = process.env.HOST || '0.0.0.0'; // Allow external connections
 
 // Middleware
 app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Chunk-Id', 'X-Rta-Id', 'X-Creator', 'X-Chunk-Timestamp', 'X-Participant-Count', 'X-Is-Final']
+  origin: function (origin, callback) {
+    // Allow requests from specified origins or no origin (for mobile apps, Postman, etc.)
+    const allowedOrigins = [
+      'http://localhost:8081',
+      'http://localhost:3000', 
+      'http://localhost:19006',
+      'https://vibesflow.ai',
+      'https://www.vibesflow.ai',
+      'https://app.vibesflow.ai',
+      process.env.EXPO_PUBLIC_RAWCHUNKS_URL,
+      process.env.CORS_ORIGINS
+    ].filter(Boolean);
+
+    // Allow requests with no origin (mobile apps, curl requests, etc.)
+    if (!origin) return callback(null, true);
+    
+    // Allow any origin in development
+    if (process.env.NODE_ENV === 'development') return callback(null, true);
+    
+    // Check if origin is in allowed list
+    if (allowedOrigins.some(allowedOrigin => 
+      allowedOrigin === '*' || 
+      origin.includes(allowedOrigin) || 
+      allowedOrigin.includes(origin)
+    )) {
+      return callback(null, true);
+    }
+    
+    // Default allow for now (can be tightened in production)
+    return callback(null, true);
+  },
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: [
+    'Content-Type', 
+    'Authorization', 
+    'X-Chunk-Id', 
+    'X-Rta-Id', 
+    'X-Creator', 
+    'X-Chunk-Timestamp', 
+    'X-Participant-Count', 
+    'X-Is-Final',
+    'X-Start-Time',  // Add the missing header
+    'X-Requested-With',
+    'Accept',
+    'Origin',
+    'Cache-Control',
+    'Pragma'
+  ],
+  exposedHeaders: [
+    'Content-Length',
+    'Content-Type',
+    'Location',
+    'X-Chunk-Status',
+    'X-Upload-Progress'
+  ],
+  credentials: false,  // Set to false for public API
+  maxAge: 86400,  // Cache preflight response for 24 hours
+  optionsSuccessStatus: 200  // Support legacy browsers
 }));
 
 app.use(express.json({ limit: '50mb' })); // Allow larger payloads
