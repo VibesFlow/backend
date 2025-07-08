@@ -1,57 +1,40 @@
 # VibesFlow RawChunks Backend
 
-Serverless backend service for collecting real-time Lyria audio chunks from the Expo app and queuing them for processing by Chunker and Dispatcher workers.
+EC2+Serverless+DynamoDB backend architecture for collecting, chunking and compressing real-time audio chunks from Lyria (from the Expo app).
 
-## Architecture
+Chunks and their metadata are queued for automatic processing and uploading to Filecoin through SynapseSDK.
 
-```
-Expo App (AudioChunkService) 
-    ↓ POST /upload (raw audio data)
-AWS Lambda (S3 Storage + SQS Queue)
-    ↓ (compress & converts into .wav)
-Chunker Worker (VRF raffle + metadata)
-    ↓ 
-Dispatcher Worker (Filecoin upload via Synapse)
-```
+## Synapse SDK Integration
 
-## API Endpoints
+### Backend Storage (`backend/rawchunks/synapseSDK.js`)
 
-### POST /upload
-Receives 60-second audio chunks from Expo app.
+We integrate the Synapse SDK to store vibestream data on Filecoin using Proof of Data Possession (PDP). Each Real-Time Audio session gets a unique RTA_ID and corresponding proof set.
 
-**Headers:**
-- `X-Chunk-Id`: Sequential chunk identifier
-- `X-Rta-Id`: RTA stream identifier
-- `X-Device-Id`: Device identifier
-- `X-Creator`: Creator account ID
-- `X-Start-Time`: Stream start timestamp
-- `X-Chunk-Timestamp`: Chunk timestamp
+**Our Implementation**:
+- Creates dedicated proof sets per RTA_ID for organized storage
+- Handles USDFC payments and Pandora service approvals automatically
+- Compresses 60-second audio chunks using WebM/Opus encoding
+- Stores temporary metadata in DynamoDB for "hot" retrieval
 
-**Body:** WAV audio data (binary)
+**vs Standard Synapse Usage**:
+- Standard: Single proof set for all user data
+- VibesFlow: One proof set per vibestream for granular access control
+- Standard: Manual payment management
+- VibesFlow: Automated payment setup with intelligent batching
 
-**Response:**
-```json
-{
-  "success": true,
-  "chunkId": "rta123_0001",
-  "rtaId": "rta123",
-  "queuedAt": 1640995200000,
-  "message": "Chunk queued for processing"
-}
+```mermaid
+graph LR
+    RTA[🎵 RTA Session] --> Chunker[📦 60s Chunks]
+    Chunker --> Compress[🗜️ WebM Compression]
+    Compress --> Synapse[📡 Synapse SDK]
+    
+    subgraph "Filecoin Storage"
+        Synapse --> ProofSet[🛡️ Proof Set]
+        ProofSet --> Storage[💾 PDP Storage]
+    end
+    
+    Synapse --> DynamoDB[🗃️ Metadata DB]
+    Storage --> FilCDN[⚡ FilCDN Ready]
 ```
 
-### GET /health
-Health check endpoint.
-
-**Response:**
-```json
-{
-  "status": "healthy",
-  "service": "rawchunks",
-  "timestamp": 1640995200000,
-  "bucket": "rawchunks-raw-chunks-dev",
-  "queue": "configured"
-}
-```
-
-See [raw-mock.yml](https://github.com/VibesFlow/backend/blob/main/rawchunks/raw-mock.yml) for the whole thing.
+See [App's README](https://github.com/VibesFlow/app/README.md) to read about the whole system.
