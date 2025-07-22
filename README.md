@@ -1,4 +1,4 @@
-# VibesFlow RawChunks Backend
+# RawChunks Backend
 
 EC2+Serverless+DynamoDB backend architecture for collecting, chunking and compressing real-time audio chunks from Lyria (from the Expo app).
 
