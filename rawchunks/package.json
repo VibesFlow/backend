@@ -1,0 +1,28 @@
+{
+  "name": "rawchunks",
+  "version": "1.0.0",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "dev": "nodemon app.js",
+    "test": "node test-synapse-direct.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "VibesFlow EC2 Backend with Synapse SDK",
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.470.0",
+    "@aws-sdk/lib-dynamodb": "^3.470.0",
+    "@filoz/synapse-sdk": "^0.18.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
+    "ethers": "^6.15.0",
+    "express": "^4.18.2",
+    "form-data": "^4.0.3",
+    "node-fetch": "^2.7.0"
+  }
+}

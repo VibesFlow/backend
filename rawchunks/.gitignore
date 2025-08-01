@@ -1,0 +1,10 @@
+.env
+local.js
+test.js
+node_modules/
+.serverless/
+deals.js
+nginx.conf
+deals.js
+diagnostics.js
+helper.js

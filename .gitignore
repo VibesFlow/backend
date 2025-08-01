@@ -1,0 +1,8 @@
+rawchunks/deploy-to-ec2.sh
+rawchunks/ecosystem.config.js
+rawchunks/test-e2e-flow.js
+rawchunks/test-synapse-connection.js
+rawchunks/test-synapse-direct.js
+
+.env
+stream/
