@@ -1,0 +1,53 @@
+{
+  "name": "alith-orchestrator",
+  "version": "1.0.0",
+  "description": "Alith AI orchestrator for real-time DJ Set generation with robust buffering and no latency",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "test": "node test.js",
+    "deploy:tee": "docker build -t vibesflow-orchestrator .",
+    "deploy:ec2": "scp -r . ec2-user@stream.vibesflow.ai:/opt/orchestrator/"
+  },
+  "keywords": [
+    "alith",
+    "ai",
+    "orchestrator",
+    "music",
+    "lyria",
+    "vibesflow",
+    "audio",
+    "realtime"
+  ],
+  "author": "VibesFlow AI",
+  "license": "MIT",
+  "dependencies": {
+    "@google/genai": "^1.11.0",
+    "alith": "^0.10.4",
+    "dotenv": "^16.6.1",
+    "express": "^4.19.2",
+    "cors": "^2.8.5",
+    "ws": "^8.18.0",
+    "@lazai-labs/alith-linux-x64-gnu": "latest"
+  },
+  "devDependencies": {
+    "@types/json-schema": "^7.0.15",
+    "@types/node": "^22.5.0",
+    "@types/ws": "^8.5.12"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vibesflow/backend/stream/orchestrator"
+  },
+  "files": [
+    "*.js",
+    "*.json",
+    "README.md",
+    "LICENSE"
+  ]
+}
