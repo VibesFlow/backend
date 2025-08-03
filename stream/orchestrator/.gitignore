@@ -4,3 +4,4 @@ llm_logs/
 deploy.sh
 server.log
 test.js
+knowledge/

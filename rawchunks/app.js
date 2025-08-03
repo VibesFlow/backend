@@ -87,7 +87,7 @@ app.use(cors({
 app.use(express.json({ limit: '50mb' })); // Allow larger payloads
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Add request timeout middleware (10 minutes for production)
+// Add request timeout middleware (10 minutes)
 app.use((req, res, next) => {
   res.setTimeout(600000, () => {
     console.log('⏰ Request timeout after 10 minutes');
@@ -751,10 +751,9 @@ app.get('/api/fix-missing-rtas', async (req, res) => {
 
 // Start server
 app.listen(PORT, HOST, () => {
-  console.log(`🚀 VibesFlow PRODUCTION Server running on ${HOST}:${PORT}`);
+  console.log(`🚀 VibesFlow Server running on ${HOST}:${PORT}`);
   console.log(`🌐 Health check: http://${HOST}:${PORT}/health`);
   console.log(`📡 Vibestreams: http://${HOST}:${PORT}/api/vibestreams`);
-  console.log(`⏰ Switched to EC2 for no timeout issues.`);
 });
 
 module.exports = app; 

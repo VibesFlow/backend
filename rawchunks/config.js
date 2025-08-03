@@ -116,7 +116,7 @@ const config = {
   }
 };
 
-// Validation function to ensure critical environment variables are loaded
+// Validation function to ensure environment variables are loaded
 function validateConfig() {
   const required = [
     'FILECOIN_PRIVATE_KEY',
