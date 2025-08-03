@@ -1,0 +1,9 @@
+node_modules/
+.env
+llm_logs/
+deploy.sh
+server.log
+knowledge/
+ecosystem.config.js
+setup.sh
+nginx.conf

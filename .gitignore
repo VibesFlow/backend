@@ -5,3 +5,4 @@ rawchunks/test-synapse-connection.js
 rawchunks/test-synapse-direct.js
 
 .env
+stream/
