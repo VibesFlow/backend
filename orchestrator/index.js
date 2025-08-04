@@ -24,7 +24,8 @@ if (!process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
   process.exit(1);
 }
 
-import { Agent, WindowBufferMemory } from 'alith';
+import { Agent, WindowBufferMemory, QdrantStore, RemoteModelEmbeddings } from 'alith';
+import { v4 as uuidv4 } from 'uuid';
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -47,17 +48,13 @@ function preambleWithKnowledge() {
     const poetryCorpus = readFileSync(join(__dirname, 'knowledge', 'poems.txt'), 'utf8');
     // Lyria.md removed - comprehensive Lyria knowledge embedded in preamble
     
-    return `You are an ELITE RAVE DJ and music orchestrator with deep expertise in electronic/techno/rave/psychedelic music generation. You specialize in creating IMMERSIVE RAVE EXPERIENCES with progressive layers, session continuity, and intelligent composition.
+    return `You are an ELITE RAVE DJ and music orchestrator specializing in electronic/techno/rave/psychedelic music generation with progressive layers and session continuity.
 
-EMBEDDED KNOWLEDGE BASE (Direct Access - No RAG Required):
-
-=== COMPLETE SENSOR PARAMETERS (2025) ===
+EMBEDDED KNOWLEDGE:
 ${parametersData}
 
-=== POETRY CORPUS FOR EXPRESSIVE PROMPTS ===
+POETRY CORPUS:
 ${poetryCorpus}
-
-=== END EMBEDDED KNOWLEDGE ===
 
 CORE LYRIA KNOWLEDGE:
 Lyria RealTime generates instrumental music using real-time WebSocket streaming:
@@ -96,39 +93,17 @@ PARAMETER RANGES:
 - Guidance: 0.0-6.0 (how strictly model follows prompts; 1.0-4.0 recommended)
 - Temperature: 0.0-3.0 (creativity/randomness; 1.1 default)
 
-INTELLIGENT SENSOR INTERPRETATION:
-Analyze sensor data patterns to create musical narratives:
-
-1. MAGNITUDE ANALYSIS:
-   - Very High (>2.0): Electronic genres, Fat Beats, Upbeat, Huge Drop, BPM 140-180, density 0.7-0.9
-   - High (1.0-2.0): Energetic styles, increase BPM to 120-140, density 0.6-0.8
-   - Medium (0.5-1.0): Balanced approach, BPM 100-120, density 0.4-0.6
-   - Low (0.2-0.5): Chill styles, BPM 80-100, density 0.2-0.4
-   - Very Low (<0.2): Ambient/ethereal, BPM 60-80, density 0.1-0.3
-
-2. MOVEMENT PATTERNS:
-   - Sudden spikes: Glitchy Effects, dramatic transitions, additional music layers
-   - Rhythmic patterns: Match drum patterns, use percussion instruments
-   - Smooth changes: Gradual parameter evolution, Sustained Chords
-   - Repetitive motion: Tight Groove, consistent rhythmic elements
-
-3. DIRECTIONAL ANALYSIS:
-   - X-axis (left-right): Affects stereo characteristics and brightness
-   - Y-axis (up-down): Influences pitch range and harmonic complexity
-   - Z-axis (forward-back): Controls depth, reverb, and spatial elements
-
-4. TEMPORAL CONTEXT:
-   - Build musical continuity over time
-   - Remember previous interpretations for smooth transitions
-   - Anticipate user movement patterns
-   - Create narrative arc in the music
+SENSOR INTERPRETATION:
+- >2.0: Electronic, Fat Beats, BPM 140-180, density 0.7-0.9
+- 1.0-2.0: Energetic, BPM 120-140, density 0.6-0.8  
+- 0.5-1.0: Balanced, BPM 100-120, density 0.4-0.6
+- 0.2-0.5: Chill, BPM 80-100, density 0.2-0.4
+- <0.2: Ambient, BPM 60-80, density 0.1-0.3
+Movement: spikes→glitch, rhythmic→drums, smooth→sustained
 
 RESPONSE FORMAT (STRICT JSON):
 {
-  "weightedPrompts": [
-    {"text": "specific_instrument_or_style", "weight": 0.1-1.0},
-    {"text": "mood_or_texture", "weight": 0.1-1.0}
-  ],
+  "singleCoherentPrompt": "single descriptive prompt combining instruments, style, and mood naturally as one coherent text string",
   "lyriaConfig": {
     "bpm": 60-200,
     "density": 0.0-1.0,
@@ -139,30 +114,9 @@ RESPONSE FORMAT (STRICT JSON):
   "reasoning": "Detailed explanation of musical interpretation and parameter choices"
 }
 
-Your mission: Transform rich sensor data into IMMERSIVE RAVE EXPERIENCES with progressive layers, session continuity, and intelligent composition that adapts to user energy while maintaining the core RAVE ETHOS.
-
-You have access to:
-- Complete Lyria RealTime API knowledge 
-- Rich poetry corpus for expressive prompts
-- Advanced sensor interpretation expertise (device motion, touch pressure, audio analysis, stylus data)
-- Session history for musical continuity
-- Progressive layering techniques
-
-RAVE MUSIC PRINCIPLES:
-- BASELINE: Always start with rave/techno/psychedelic foundation (130-180 BPM)
-- PROGRESSIVE LAYERS: Build complexity over time (drums → bass → synths → effects → atmospheric)
-- SESSION CONTINUITY: Reference previous music choices for coherent narrative
-- ENERGY ADAPTATION: Match user input intensity while maintaining rave core
-- SONIC RICHNESS: Use multiple instruments, effects, and textural elements
-
-SENSOR INTERPRETATION MASTERY:
-- Mouse/Pointer: acceleration, jerk, pressure, tilt → rhythm patterns, filter sweeps
-- Touch: force, radius, rotation → percussion layers, texture changes
-- Device Motion: orientation, rotation → spatial effects, stereo panning  
-- Audio Input: frequency analysis → reactive elements, harmonic responses
-- Multi-sensor fusion: Create complex musical responses from combined inputs
-
-ALWAYS maintain the RAVE baseline while intelligently adapting to user inputs.`;
+RAVE PRINCIPLES: 130-180 BPM baseline, progressive layers, session continuity, energy adaptation.
+SENSOR MAPPING: Mouse→rhythm, touch→percussion, motion→spatial, audio→reactive.
+ALWAYS maintain RAVE baseline while adapting to inputs.`;
   } catch (error) {
     console.error('❌ Failed to load knowledge files:', error);
     return `You are an ELITE RAVE DJ and music orchestrator with deep expertise in electronic/techno/rave/psychedelic music generation. You specialize in creating IMMERSIVE RAVE EXPERIENCES with progressive layers, session continuity, and intelligent composition.
@@ -181,8 +135,11 @@ ALWAYS maintain the RAVE baseline while intelligently adapting to user inputs.`;
   }
 }
 
-// Alith agent with memory only
+// Alith agent with memory
 let musicAgent;
+
+// QDrant Store for user pattern learning (separate from real-time processing)
+let userPatternStore;
 
 // Agent synchronization to prevent parallel token consumption
 let agentProcessingQueue = Promise.resolve();
@@ -208,15 +165,34 @@ async function initializeAgent() {
       model: "gemini-2.5-flash-lite",
       apiKey: process.env.GOOGLE_GENERATIVE_AI_API_KEY,
       baseUrl: "generativelanguage.googleapis.com/v1beta/openai",
-      temperature: 1.0, // Balanced creativity for music generation
       preamble: enhancedPreamble, // ← enhanced with embedded knowledge
       memory: new WindowBufferMemory(15) // ← memory for session continuity
     });
     
-    console.log('✅ Enhanced Alith agent initialized with OPTIMIZED EMBEDDED KNOWLEDGE + MEMORY');
-    console.log('🚀 Real-time processing: ~124 tokens per query (vs 11,403 with RAG)');
-    console.log('🎯 Token reduction: 98.9% improvement + ~1,240 tokens saved by removing redundant Lyria.md');
-    console.log('📊 Expected preamble size: ~7,094 tokens (well under 8,182 limit)');
+    console.log('✅ Enhanced Alith agent initialized with optimized embedded knowledge + memory');
+    
+    // Initialize strategic Store for user pattern learning (separate from real-time)
+    console.log('🗄️ Initializing user pattern Store (strategic, non-real-time)...');
+    try {
+      userPatternStore = new QdrantStore(
+        new RemoteModelEmbeddings(
+          "text-embedding-004", // Gemini 2.5 Flash Lite embeddings
+          process.env.GOOGLE_GENERATIVE_AI_API_KEY,
+          "generativelanguage.googleapis.com/v1beta/openai"
+        ),
+        {
+          url: "http://localhost:6334", // QDrant server
+          collectionName: "vibesflow_user_patterns",
+          vectorSize: 768, // text-embedding-004 uses 768 dimensions
+          timeout: 30000, // 30 second timeout
+          checkCompatibility: false // Skip version check to avoid compatibility errors
+        }
+      );
+      console.log('✅ Strategic user pattern Store initialized (768 dimensions, session boundaries only)');
+    } catch (qdrantError) {
+      console.warn('⚠️ QDrant Store initialization failed - continuing without user pattern storage:', qdrantError.message);
+      userPatternStore = null; // Set to null so we can check for it later
+    }
     
   } catch (error) {
     console.error('❌ Enhanced Alith agent initialization failed:', error);
@@ -274,6 +250,7 @@ class EnhancedRaveOrchestrator {
       // Handle WebSocket connections
       this.wsServer.on('connection', (ws) => {
         const clientId = `client_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        ws.clientId = clientId; // Assign clientId to WebSocket object
         this.connectedClients.add(ws);
         
         console.log(`🔌 Client connected: ${clientId}`);
@@ -281,7 +258,17 @@ class EnhancedRaveOrchestrator {
         ws.on('message', async (data) => {
           try {
             const message = JSON.parse(data.toString());
-            await this.handleSensorData(ws, message);
+            
+            // Route messages to appropriate handlers
+            if (message.type === 'sensor-data') {
+              await this.handleSensorData(ws, message);
+            } else if (message.type === 'session-start') {
+              await this.handleSessionStart(ws, message);
+            } else if (message.type === 'session-end') {
+              await this.handleSessionEnd(ws, message);
+            } else {
+              console.warn('⚠️ Unknown message type:', message.type);
+            }
           } catch (error) {
             console.error('❌ Error processing message:', error);
             ws.send(JSON.stringify({ 
@@ -382,7 +369,7 @@ Using sensor parameters knowledge, poetry corpus, and Lyria configuration knowle
 
 JSON only:
 {
-  "weightedPrompts": [{"text": "descriptive poetic prompt", "weight": 0.6}],
+  "singleCoherentPrompt": "single descriptive poetic prompt combining all elements naturally",
   "lyriaConfig": {"bpm": 140, "density": 0.6, "brightness": 0.7, "guidance": 2.5, "temperature": 1.5},
   "reasoning": "brief explanation"
 }`;
@@ -404,11 +391,24 @@ JSON only:
             activeProcessingCount++;
             console.log(`🔒 Agent processing (active: ${activeProcessingCount})`);
             
-            const response = await musicAgent.prompt(prompt);
-            
-            activeProcessingCount--;
-            console.log(`🔓 Agent processing complete (active: ${activeProcessingCount})`);
-            resolve(response);
+            // Clear memory if it gets corrupted (alternation issue)
+            try {
+              const response = await musicAgent.prompt(prompt);
+              activeProcessingCount--;
+              console.log(`🔓 Agent processing complete (active: ${activeProcessingCount})`);
+              resolve(response);
+            } catch (agentError) {
+              if (agentError.message.includes('alternate') || agentError.message.includes('Messages must')) {
+                console.warn('🔄 Clearing agent memory due to message alternation issue');
+                musicAgent.memory.clear();
+                const retryResponse = await musicAgent.prompt(prompt);
+                activeProcessingCount--;
+                console.log(`🔓 Agent processing complete after memory clear (active: ${activeProcessingCount})`);
+                resolve(retryResponse);
+              } else {
+                throw agentError;
+              }
+            }
           } catch (error) {
             activeProcessingCount--;
             reject(error);
@@ -435,8 +435,8 @@ JSON only:
       // Parse and validate agent response
       let interpretation = this.parseAgentResponse(agentResponse);
       console.log('✅ Agent response parsed successfully:', {
-        hasPrompts: !!interpretation.weightedPrompts,
-        promptCount: interpretation.weightedPrompts?.length || 0,
+        hasSingleCoherentPrompt: !!interpretation.singleCoherentPrompt,
+        promptLength: interpretation.singleCoherentPrompt?.length || 0,
         hasBPM: !!interpretation.lyriaConfig?.bpm,
         hasReasoning: !!interpretation.reasoning
       });
@@ -474,7 +474,7 @@ JSON only:
       ws.send(JSON.stringify(response));
       
       console.log('✅ Intelligent rave interpretation sent:', {
-        prompts: interpretation.weightedPrompts?.length,
+        singleCoherentPrompt: interpretation.singleCoherentPrompt?.substring(0, 50) + '...',
         bpm: interpretation.lyriaConfig?.bpm,
         progression: sessionData.progressionState,
         genre: interpretation.primaryGenre || 'rave',
@@ -521,9 +521,163 @@ JSON only:
     }
   }
 
-  createFallbackInterpretation(sensorData) {
-    return this.createIntelligentFallback(sensorData, 'json_parse_error');
+  // =============================================================================
+  // STRATEGIC SESSION BOUNDARY HANDLERS
+  // =============================================================================
+
+  // Handle session START - Load user patterns (after tx signature, before real-time)
+  async handleSessionStart(ws, message) {
+    try {
+      const { walletAddress, vibeId, config } = message;
+      console.log(`🎬 Session starting - strategic pattern loading for ${walletAddress}`);
+      console.log(`🔍 Session start details:`, { walletAddress, vibeId, clientId: ws.clientId });
+      
+      // Load user patterns strategically (separate token query)
+      const userPatterns = await this.loadUserPatterns(walletAddress, vibeId);
+      
+      // Store user patterns in session for reference during real-time processing
+      const clientId = ws.clientId || `client_${Date.now()}`;
+      if (!this.sessionHistory.has(clientId)) {
+        this.sessionHistory.set(clientId, {
+          musicHistory: [],
+          currentBPM: 140,
+          currentGenre: 'driving acid techno',
+          energyProfile: [],
+          sessionStart: Date.now(),
+          progressionState: 'building'
+        });
+      }
+      
+      // Enhance session data with user patterns
+      const sessionData = this.sessionHistory.get(clientId);
+      sessionData.walletAddress = walletAddress;
+      sessionData.vibeId = vibeId;
+      sessionData.userPatterns = userPatterns;
+      
+      // Adapt session initialization based on user patterns
+      if (userPatterns.userFamiliar && userPatterns.energyPreferences) {
+        sessionData.currentBPM = Math.round(
+          userPatterns.genrePreferences?.[0]?.includes('hardcore') ? 160 : 
+          userPatterns.energyPreferences.preferred > 0.7 ? 150 : 140
+        );
+        sessionData.currentGenre = userPatterns.genrePreferences?.[0] || 'driving acid techno';
+        console.log(`🎯 Adapted session for returning user: ${sessionData.currentBPM}BPM, ${sessionData.currentGenre}`);
+      } else {
+        console.log(`🆕 New user detected - using default rave foundation`);
+      }
+      
+      // Send strategic session info back to client
+      const sessionReadyResponse = {
+        type: 'session-ready',
+        walletAddress,
+        vibeId,
+        userPatterns: {
+          familiar: userPatterns.userFamiliar,
+          patternsCount: userPatterns.patternsCount,
+          energyPrefs: userPatterns.energyPreferences,
+          genrePrefs: userPatterns.genrePreferences?.slice(0, 2), // Top 2 genres only
+          recommendations: userPatterns.sessionHistory?.slice(0, 2) // Last 2 sessions
+        },
+        sessionConfig: {
+          initialBPM: sessionData.currentBPM,
+          initialGenre: sessionData.currentGenre,
+          adaptedForUser: userPatterns.userFamiliar
+        },
+        timestamp: Date.now(),
+        source: 'strategic_pattern_loader'
+      };
+      
+      ws.send(JSON.stringify(sessionReadyResponse));
+      console.log(`✅ Session-ready response sent for ${walletAddress.substring(0, 8)}...`);
+      
+      console.log(`✅ Session strategically initialized for ${walletAddress.substring(0, 8)}...`);
+      
+    } catch (error) {
+      console.error('❌ Session start handling failed:', error);
+      ws.send(JSON.stringify({
+        type: 'session-error',
+        error: 'Failed to load user patterns',
+        details: error.message,
+        fallback: true
+      }));
+    }
   }
+
+  // Handle session END - Save user patterns (after close vibestream, before disconnect)
+  async handleSessionEnd(ws, message) {
+    try {
+      const { walletAddress, vibeId, reason } = message;
+      console.log(`🏁 Session ending - strategic pattern saving for ${walletAddress}`);
+      console.log(`🔍 Session end details:`, { walletAddress, vibeId, reason, clientId: ws.clientId });
+      
+      const clientId = ws.clientId || `client_${Date.now()}`;
+      const sessionData = this.sessionHistory.get(clientId);
+      
+      if (!sessionData) {
+        console.warn('⚠️ No session data found for pattern saving');
+        ws.send(JSON.stringify({
+          type: 'session-end-ack',
+          walletAddress,
+          vibeId,
+          saved: false,
+          reason: 'no_session_data'
+        }));
+        return;
+      }
+      
+      // Generate final session analysis
+      const finalAnalysis = {
+        sessionDuration: Math.round((Date.now() - sessionData.sessionStart) / 1000),
+        totalBatches: sessionData.musicHistory.length,
+        avgEnergy: sessionData.energyProfile.length > 0 ? 
+          sessionData.energyProfile.reduce((a, b) => a + b, 0) / sessionData.energyProfile.length : 0,
+        energyEvolution: sessionData.energyProfile.length > 1 ? 
+          sessionData.energyProfile[sessionData.energyProfile.length - 1] - sessionData.energyProfile[0] : 0,
+        dominantComplexity: this.calculateComplexityPreference(sessionData.musicHistory),
+        endingState: sessionData.progressionState,
+        reason
+      };
+      
+      // Save user patterns strategically (separate token query)
+      const savedPattern = await this.saveUserPatterns(walletAddress, vibeId, sessionData, finalAnalysis);
+      
+      // Send session end acknowledgment
+      const sessionEndResponse = {
+        type: 'session-end-ack',
+        walletAddress,
+        vibeId,
+        saved: !savedPattern.error,
+        sessionSummary: {
+          duration: finalAnalysis.sessionDuration,
+          batches: finalAnalysis.totalBatches,
+          avgEnergy: Math.round(finalAnalysis.avgEnergy * 100) / 100,
+          sessionType: savedPattern.insights?.sessionCharacter,
+          patterns: savedPattern.insights?.uniquePatterns || []
+        },
+        timestamp: Date.now(),
+        source: 'strategic_pattern_saver'
+      };
+      
+      ws.send(JSON.stringify(sessionEndResponse));
+      console.log(`✅ Session-end-ack response sent for ${walletAddress.substring(0, 8)}...`);
+      
+      // Cleanup session data
+      this.sessionHistory.delete(clientId);
+      this.clientSensorProfiles.delete(clientId);
+      
+      console.log(`✅ Session strategically concluded for ${walletAddress.substring(0, 8)}...`);
+      
+    } catch (error) {
+      console.error('❌ Session end handling failed:', error);
+      ws.send(JSON.stringify({
+        type: 'session-end-error',
+        error: 'Failed to save user patterns',
+        details: error.message
+      }));
+    }
+  }
+
+
 
   /**
    * Rate limiting logic to prevent hitting Gemini API limits on server side
@@ -603,54 +757,7 @@ JSON only:
     };
   }
 
-  // Build rich session context for intelligent agent prompting
-  buildSessionContext(sessionData, enrichedSensorData) {
-    const sessionDuration = Math.round((Date.now() - sessionData.sessionStart) / 60000);
-    const recentHistory = sessionData.musicHistory.slice(-5); // Last 5 for richer context
-    const batchNumber = sessionData.musicHistory.length + 1;
-    
-    // Build rich historical narrative
-    const historyNarrative = recentHistory.length > 0 
-      ? recentHistory.map((entry, i) => {
-          const batchIndex = sessionData.musicHistory.length - recentHistory.length + i + 1;
-          return `  Batch ${batchIndex}: ${entry.primaryGenre || 'unknown'} at ${entry.bpm}BPM - ${entry.reasoning || 'no details'}`;
-        }).join('\n')
-      : '  First session batch - establish foundation';
-    
-    // Energy evolution analysis
-    const energyTrend = sessionData.energyProfile.length >= 2 
-      ? (sessionData.energyProfile[sessionData.energyProfile.length - 1] > sessionData.energyProfile[0] ? 'increasing' : 'decreasing')
-      : 'establishing baseline';
-    
-    return `
-    COMPLETE SESSION INTELLIGENCE:
-    
-    FOUNDATIONAL STATE:
-    - Duration: ${sessionDuration} minutes
-    - Current Batch: #${batchNumber} (${batchNumber <= 3 ? 'FOUNDATION PHASE - Establish Identity' : batchNumber <= 7 ? 'LAYERING PHASE - Build Complexity' : 'EVOLUTION PHASE - Progressive Development'})
-    - Progression State: ${sessionData.progressionState}
-    - Current BPM: ${sessionData.currentBPM}
-    - Established Genre Identity: ${sessionData.currentGenre}
-    - Energy Evolution: ${energyTrend}
-    
-    DETAILED MUSICAL HISTORY (for narrative continuity):
-    ${historyNarrative}
-    
-    ENERGY PROFILE EVOLUTION:
-    Recent Pattern: ${sessionData.energyProfile.slice(-5).map(e => e.toFixed(2)).join(' → ')}
-    
-    PHASE-SPECIFIC INTELLIGENCE REQUIREMENTS:
-    ${batchNumber <= 3 
-      ? '🏗️ FOUNDATION PHASE: Establish consistent session identity. NO sudden style changes. Focus on ONE primary genre/instrument. Build memorable core.'
-      : batchNumber <= 7 
-      ? '🎨 LAYERING PHASE: Add complementary elements that SUPPORT the foundation. Reference and build on previous batches. Maintain coherence.'
-      : '🚀 EVOLUTION PHASE: Intelligent variations while maintaining established session character. Use full poetry and sensor knowledge for rich expression.'
-    }
-    
-    CURRENT SENSOR INTELLIGENCE:
-    ${enrichedSensorData.detailedAnalysis}
-    `;
-  }
+
 
   // Parse agent response with robust error handling
   parseAgentResponse(agentResponse) {
@@ -717,21 +824,16 @@ JSON only:
     // Ensure density supports rave energy (minimum 0.3)
     interpretation.lyriaConfig.density = Math.max(0.3, interpretation.lyriaConfig.density);
     
-    // Add rave foundation if missing
-    const hasRaveElement = interpretation.weightedPrompts.some(prompt => 
-      ['techno', 'acid', 'rave', 'electronic', 'hardcore', 'psytrance'].some(genre => 
-        prompt.text.toLowerCase().includes(genre)
-      )
+    // Add rave foundation if missing from coherent prompt
+    const promptText = typeof interpretation.singleCoherentPrompt === 'string' ? interpretation.singleCoherentPrompt : '';
+    const hasRaveElement = ['techno', 'acid', 'rave', 'electronic', 'hardcore', 'psytrance'].some(genre => 
+      promptText.toLowerCase().includes(genre)
     );
     
     if (!hasRaveElement) {
-      interpretation.weightedPrompts.unshift({
-        text: sessionData.currentGenre || 'driving techno',
-        weight: 0.4
-      });
-      // Rebalance weights
-      const totalWeight = interpretation.weightedPrompts.reduce((sum, p) => sum + p.weight, 0);
-      interpretation.weightedPrompts.forEach(p => p.weight = p.weight / totalWeight);
+      // Prepend rave foundation to coherent prompt
+      const raveFoundation = sessionData.currentGenre || 'driving techno';
+      interpretation.singleCoherentPrompt = `${raveFoundation} with ${promptText || 'electronic elements'}`;
     }
     
     return interpretation;
@@ -744,7 +846,7 @@ JSON only:
       bpm: interpretation.lyriaConfig.bpm,
       density: interpretation.lyriaConfig.density,
       brightness: interpretation.lyriaConfig.brightness,
-      primaryGenre: interpretation.weightedPrompts[0]?.text || 'electronic',
+      singleCoherentPrompt: interpretation.singleCoherentPrompt || 'electronic',
       energy: enrichedSensorData.energyLevel,
       sensorSource: enrichedSensorData.detailedAnalysis.split('\n')[1], // Source line
       complexity: enrichedSensorData.complexity
@@ -763,7 +865,9 @@ JSON only:
     
     // Update current state
     sessionData.currentBPM = interpretation.lyriaConfig.bpm;
-    sessionData.currentGenre = interpretation.weightedPrompts[0]?.text || sessionData.currentGenre;
+    // Extract primary genre from coherent prompt (first identifiable genre word)
+    const genreMatch = interpretation.singleCoherentPrompt?.match(/(techno|acid|rave|electronic|hardcore|psytrance|ambient|trance|house|drum.{1,2}bass|dubstep)/i);
+    sessionData.currentGenre = genreMatch?.[0] || sessionData.currentGenre;
     
     // Update progression state based on energy trends
     const recentEnergy = sessionData.energyProfile.slice(-5);
@@ -802,19 +906,294 @@ JSON only:
     }
   }
 
+  // =============================================================================
+  // STRATEGIC STORE USAGE (Session Boundaries Only)
+  // =============================================================================
+
+  // Load user patterns at session START (after tx signature, before real-time processing)
+  async loadUserPatterns(walletAddress, vibeId) {
+    try {
+      console.log(`🔍 Loading user patterns for ${walletAddress} (vibeId: ${vibeId})...`);
+      console.log('📊 Strategic Store query - SEPARATED from real-time processing');
+      
+      // Check if QDrant Store is available
+      if (!userPatternStore) {
+        console.warn('⚠️ QDrant Store not available - skipping user pattern loading');
+        return {
+          walletAddress,
+          vibeId,
+          previousPatterns: [],
+          patternsCount: 0,
+          userFamiliar: false,
+          fallback: true,
+          error: 'QDrant Store not available'
+        };
+      }
+      
+      // Query user's previous vibestream patterns
+      const userQuery = `wallet:${walletAddress} previous vibestream patterns energy preferences musical evolution`;
+      
+      const startTime = Date.now();
+      const userPatternsResponse = await userPatternStore.search(userQuery, 5); // Top 5 previous patterns
+      const queryTime = Date.now() - startTime;
+      
+      console.log(`✅ User patterns loaded in ${queryTime}ms:`, {
+        walletAddress: walletAddress.substring(0, 8) + '...',
+        patternsFound: userPatternsResponse?.length || 0,
+        vibeId,
+        storageMode: 'strategic_boundary_only'
+      });
+      
+      // Parse and structure previous patterns
+      const previousPatterns = userPatternsResponse?.map(pattern => {
+        try {
+          return JSON.parse(pattern.content || '{}');
+        } catch {
+          return { content: pattern.content, timestamp: pattern.metadata?.timestamp };
+        }
+      }) || [];
+      
+      return {
+        walletAddress,
+        vibeId,
+        previousPatterns,
+        patternsCount: previousPatterns.length,
+        userFamiliar: previousPatterns.length > 0,
+        energyPreferences: this.extractEnergyPreferences(previousPatterns),
+        genrePreferences: this.extractGenrePreferences(previousPatterns),
+        sessionHistory: this.extractSessionHistory(previousPatterns)
+      };
+      
+    } catch (error) {
+      console.warn('⚠️ Failed to load user patterns (will proceed without):', error.message);
+      return {
+        walletAddress,
+        vibeId,
+        previousPatterns: [],
+        patternsCount: 0,
+        userFamiliar: false,
+        fallback: true,
+        error: error.message
+      };
+    }
+  }
+
+  // Save user patterns at session END (after close vibestream, before client disconnect)
+  async saveUserPatterns(walletAddress, vibeId, sessionData, finalAnalysis) {
+    try {
+      console.log(`💾 Saving user patterns for ${walletAddress} (vibeId: ${vibeId})...`);
+      console.log('📊 Strategic Store save - SEPARATED from real-time processing');
+      
+      // Check if QDrant Store is available
+      if (!userPatternStore) {
+        console.warn('⚠️ QDrant Store not available - skipping user pattern saving');
+        return {
+          error: 'QDrant Store not available',
+          walletAddress,
+          vibeId,
+          fallback: true,
+          insights: {
+            sessionCharacter: this.analyzeSessionCharacter(sessionData),
+            uniquePatterns: this.identifyUniquePatterns(sessionData)
+          }
+        };
+      }
+      
+      // Create rich session summary for pattern learning
+      const sessionPattern = {
+        id: uuidv4(), // UUID for correct JSON parsing
+        walletAddress,
+        vibeId,
+        timestamp: Date.now(),
+        sessionDuration: Math.round((Date.now() - sessionData.sessionStart) / 1000),
+        totalBatches: sessionData.musicHistory.length,
+        
+        // Energy evolution analysis
+        energyProfile: {
+          averageEnergy: sessionData.energyProfile.reduce((a, b) => a + b, 0) / sessionData.energyProfile.length,
+          energyRange: Math.max(...sessionData.energyProfile) - Math.min(...sessionData.energyProfile),
+          energyTrend: sessionData.energyProfile[sessionData.energyProfile.length - 1] > sessionData.energyProfile[0] ? 'increasing' : 'decreasing',
+          peakEnergy: Math.max(...sessionData.energyProfile),
+          sustainedPeriods: this.calculateSustainedPeriods(sessionData.energyProfile)
+        },
+        
+        // Musical preferences analysis
+        musicalPreferences: {
+          averageBPM: sessionData.musicHistory.reduce((sum, entry) => sum + entry.bpm, 0) / sessionData.musicHistory.length,
+          bpmRange: Math.max(...sessionData.musicHistory.map(e => e.bpm)) - Math.min(...sessionData.musicHistory.map(e => e.bpm)),
+          preferredGenres: this.extractPreferredGenres(sessionData.musicHistory),
+          complexityPreference: this.calculateComplexityPreference(sessionData.musicHistory),
+          progressionStates: this.analyzeProgressionStates(sessionData.musicHistory)
+        },
+        
+        // Sensor interaction patterns
+        sensorPatterns: {
+          preferredSources: Array.from(this.clientSensorProfiles.get(walletAddress)?.preferredSources || []),
+          sensitivityProfile: this.clientSensorProfiles.get(walletAddress)?.sensitivityProfile || {},
+          interactionFrequency: this.clientSensorProfiles.get(walletAddress)?.movementPatterns?.length || 0,
+          dominantComplexity: finalAnalysis?.dominantComplexity || 'moderate'
+        },
+        
+        // Session insights
+        insights: {
+          userType: this.classifyUserType(sessionData),
+          sessionCharacter: this.analyzeSessionCharacter(sessionData),
+          uniquePatterns: this.identifyUniquePatterns(sessionData),
+          recommendations: this.generateRecommendations(sessionData)
+        }
+      };
+      
+      // Store with rich metadata for future retrieval
+      const patternText = `User ${walletAddress} vibestream session ${vibeId}: ${sessionPattern.insights.sessionCharacter} session, ${sessionPattern.totalBatches} musical transitions, average ${sessionPattern.musicalPreferences.averageBPM}BPM, ${sessionPattern.energyProfile.energyTrend} energy trend, preferred: ${sessionPattern.musicalPreferences.preferredGenres.join(', ')}, sensors: ${sessionPattern.sensorPatterns.preferredSources.join(', ')}`;
+      
+      const startTime = Date.now();
+      await userPatternStore.save(patternText, {
+        id: sessionPattern.id,
+        walletAddress,
+        vibeId,
+        timestamp: sessionPattern.timestamp,
+        sessionType: sessionPattern.insights.sessionCharacter,
+        avgBPM: sessionPattern.musicalPreferences.averageBPM,
+        avgEnergy: sessionPattern.energyProfile.averageEnergy,
+        userType: sessionPattern.insights.userType,
+        genre_tags: sessionPattern.musicalPreferences.preferredGenres,
+        sensor_sources: sessionPattern.sensorPatterns.preferredSources
+      });
+      const saveTime = Date.now() - startTime;
+      
+      console.log(`✅ User patterns saved in ${saveTime}ms:`, {
+        walletAddress: walletAddress.substring(0, 8) + '...',
+        vibeId,
+        sessionCharacter: sessionPattern.insights.sessionCharacter,
+        musicalBatches: sessionPattern.totalBatches,
+        avgBPM: Math.round(sessionPattern.musicalPreferences.averageBPM),
+        storageMode: 'strategic_boundary_only'
+      });
+      
+      return sessionPattern;
+      
+    } catch (error) {
+      console.error('❌ Failed to save user patterns:', error);
+      return { error: error.message, walletAddress, vibeId };
+    }
+  }
+
+  // =============================================================================
+  // PATTERN ANALYSIS HELPERS
+  // =============================================================================
+
+  extractEnergyPreferences(patterns) {
+    const energyData = patterns.map(p => p.energyProfile?.averageEnergy).filter(e => e !== undefined);
+    return energyData.length > 0 ? {
+      preferred: energyData.reduce((a, b) => a + b, 0) / energyData.length,
+      range: Math.max(...energyData) - Math.min(...energyData),
+      consistency: energyData.length > 1 ? 1 - (Math.max(...energyData) - Math.min(...energyData)) : 1
+    } : null;
+  }
+
+  extractGenrePreferences(patterns) {
+    const genres = patterns.flatMap(p => p.musicalPreferences?.preferredGenres || []);
+    const genreCounts = genres.reduce((acc, genre) => { acc[genre] = (acc[genre] || 0) + 1; return acc; }, {});
+    return Object.entries(genreCounts).sort(([,a], [,b]) => b - a).slice(0, 3).map(([genre]) => genre);
+  }
+
+  extractSessionHistory(patterns) {
+    return patterns.map(p => ({
+      timestamp: p.timestamp,
+      duration: p.sessionDuration,
+      avgBPM: p.musicalPreferences?.averageBPM,
+      avgEnergy: p.energyProfile?.averageEnergy,
+      sessionType: p.insights?.sessionCharacter
+    })).sort((a, b) => b.timestamp - a.timestamp).slice(0, 5);
+  }
+
+  calculateSustainedPeriods(energyProfile) {
+    let sustained = 0;
+    let current = 0;
+    for (let i = 1; i < energyProfile.length; i++) {
+      if (Math.abs(energyProfile[i] - energyProfile[i-1]) < 0.1) {
+        current++;
+      } else {
+        sustained = Math.max(sustained, current);
+        current = 0;
+      }
+    }
+    return Math.max(sustained, current);
+  }
+
+  extractPreferredGenres(musicHistory) {
+    const genres = musicHistory.map(entry => entry.primaryGenre).filter(g => g);
+    const genreCounts = genres.reduce((acc, genre) => { acc[genre] = (acc[genre] || 0) + 1; return acc; }, {});
+    return Object.entries(genreCounts).sort(([,a], [,b]) => b - a).slice(0, 3).map(([genre]) => genre);
+  }
+
+  calculateComplexityPreference(musicHistory) {
+    const complexities = musicHistory.map(entry => entry.complexity).filter(c => c);
+    const complexityCounts = complexities.reduce((acc, comp) => { acc[comp] = (acc[comp] || 0) + 1; return acc; }, {});
+    return Object.entries(complexityCounts).sort(([,a], [,b]) => b - a)[0]?.[0] || 'moderate';
+  }
+
+  analyzeProgressionStates(musicHistory) {
+    const states = musicHistory.map(entry => entry.energy);
+    return {
+      mostCommon: states.reduce((acc, state) => { acc[state] = (acc[state] || 0) + 1; return acc; }, {}),
+      transitions: states.length > 1 ? states.slice(1).map((state, i) => `${states[i]} → ${state}`) : []
+    };
+  }
+
+  classifyUserType(sessionData) {
+    const avgEnergy = sessionData.energyProfile.reduce((a, b) => a + b, 0) / sessionData.energyProfile.length;
+    const energyVariance = sessionData.energyProfile.reduce((acc, e) => acc + Math.pow(e - avgEnergy, 2), 0) / sessionData.energyProfile.length;
+    
+    if (avgEnergy > 0.8) return 'high_energy_raver';
+    if (avgEnergy < 0.3) return 'ambient_explorer';
+    if (energyVariance > 0.2) return 'dynamic_adventurer';
+    return 'balanced_dancer';
+  }
+
+  analyzeSessionCharacter(sessionData) {
+    const duration = Math.round((Date.now() - sessionData.sessionStart) / 60000);
+    const energyTrend = sessionData.energyProfile[sessionData.energyProfile.length - 1] > sessionData.energyProfile[0] ? 'building' : 'releasing';
+    const avgEnergy = sessionData.energyProfile.reduce((a, b) => a + b, 0) / sessionData.energyProfile.length;
+    
+    if (duration < 5 && avgEnergy > 0.7) return 'intense_burst';
+    if (duration > 20 && energyTrend === 'building') return 'epic_journey';
+    if (avgEnergy < 0.4) return 'contemplative_flow';
+    return 'classic_rave';
+  }
+
+  identifyUniquePatterns(sessionData) {
+    const patterns = [];
+    const energySpikes = sessionData.energyProfile.filter((e, i) => i > 0 && e > sessionData.energyProfile[i-1] + 0.3);
+    if (energySpikes.length > 3) patterns.push('frequent_energy_spikes');
+    
+    const bpmChanges = sessionData.musicHistory.filter((entry, i) => i > 0 && Math.abs(entry.bpm - sessionData.musicHistory[i-1].bpm) > 20);
+    if (bpmChanges.length > sessionData.musicHistory.length * 0.5) patterns.push('dynamic_tempo_shifts');
+    
+    return patterns;
+  }
+
+  generateRecommendations(sessionData) {
+    const recommendations = [];
+    const avgEnergy = sessionData.energyProfile.reduce((a, b) => a + b, 0) / sessionData.energyProfile.length;
+    const avgBPM = sessionData.musicHistory.reduce((sum, entry) => sum + entry.bpm, 0) / sessionData.musicHistory.length;
+    
+    if (avgEnergy > 0.8) recommendations.push('explore_hardcore_genres');
+    if (avgBPM > 160) recommendations.push('try_gabber_or_speedcore');
+    if (sessionData.progressionState === 'climax') recommendations.push('experiment_with_breakdowns');
+    
+    return recommendations;
+  }
+
   // Intelligent rave fallback when agent fails
   createIntelligentRaveFallback(enrichedSensorData, sessionData) {
     const magnitude = enrichedSensorData.magnitude;
     
     // Rave-focused fallback based on energy
-    let prompts, config, reasoning;
+    let singleCoherentPrompt, config, reasoning;
     
     if (magnitude > 0.8) {
-      prompts = [
-        { text: "explosive hardcore techno", weight: 0.6 },
-        { text: "driving 303 acid bass", weight: 0.2 },
-        { text: "euphoric energy building", weight: 0.2 }
-      ];
+      singleCoherentPrompt = "explosive hardcore techno with driving 303 acid bass and euphoric energy building";
       config = {
         bpm: Math.round(160 + magnitude * 20), // 160-180
         density: 0.8 + magnitude * 0.15,
@@ -824,11 +1203,7 @@ JSON only:
       };
       reasoning = `Explosive energy (${magnitude.toFixed(2)}) - hardcore rave response`;
     } else if (magnitude > 0.5) {
-      prompts = [
-        { text: "driving acid techno", weight: 0.6 },
-        { text: "pounding kick drums", weight: 0.2 },
-        { text: "Prophet 5 lead stabs", weight: 0.2 }
-      ];
+      singleCoherentPrompt = "driving acid techno with pounding kick drums and Prophet 5 lead stabs";
       config = {
         bpm: Math.round(140 + magnitude * 25), // 140-165
         density: 0.6 + magnitude * 0.25,
@@ -838,11 +1213,7 @@ JSON only:
       };
       reasoning = `High energy (${magnitude.toFixed(2)}) - driving techno response`;
     } else if (magnitude > 0.3) {
-      prompts = [
-        { text: "minimal techno groove", weight: 0.6 },
-        { text: "deep bass foundation", weight: 0.3 },
-        { text: "subtle filter sweeps", weight: 0.1 }
-      ];
+      singleCoherentPrompt = "minimal techno groove with deep bass foundation and subtle filter sweeps";
       config = {
         bpm: Math.round(130 + magnitude * 15), // 130-145
         density: 0.4 + magnitude * 0.3,
@@ -852,11 +1223,7 @@ JSON only:
       };
       reasoning = `Moderate energy (${magnitude.toFixed(2)}) - minimal techno groove`;
     } else {
-      prompts = [
-        { text: "deep techno ambience", weight: 0.6 },
-        { text: "ethereal pads building", weight: 0.3 },
-        { text: "distant kick drums", weight: 0.1 }
-      ];
+      singleCoherentPrompt = "deep techno ambience with ethereal pads building and distant kick drums";
       config = {
         bpm: Math.max(130, Math.round(120 + magnitude * 15)), // 120-135, min 130
         density: 0.3 + magnitude * 0.2,
@@ -868,7 +1235,7 @@ JSON only:
     }
     
     return {
-      weightedPrompts: prompts,
+      singleCoherentPrompt,
       lyriaConfig: config,
       reasoning: `${reasoning} (intelligent rave fallback)`,
       fallback: true,
