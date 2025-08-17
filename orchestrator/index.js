@@ -41,94 +41,32 @@ import cors from 'cors';
 import { WebSocketServer } from 'ws';
 import http from 'http';
 
-// Load knowledge files directly into enhanced preamble
+// Enhanced preamble with embedded knowledge
 function preambleWithKnowledge() {
   try {
-    // Token Optimization: Use only essential knowledge, not full files
-    const essentialParameters = `Essential Sensor Mappings:
-- Mouse: clientX,clientY → rhythm/energy (velocity = sqrt(deltaX² + deltaY²))
-- Touch: force 0.0-1.0, radiusX/Y, rotationAngle → percussion intensity
-- Scroll: deltaY → pitch/filter sweeps (scrollVelocity for smoothness)
-- Movement: magnitude = sqrt(x² + y² + z²) → overall energy
-- Patterns: direction changes, acceleration, jerk → complexity
-- Fusion: weightedCombination, smoothing filters → stability`;
+    // Load poems as Knowledge for the agent to access intelligently
+    const poemsContent = readFileSync(join(__dirname, 'knowledge', 'poems.txt'), 'utf8');
+    const parametersContent = readFileSync(join(__dirname, 'knowledge', 'parameters.txt'), 'utf8');
     
-    const poetryEssence = `Poetic Inspiration (condensed):
-"Fire to the wire - I refuse the fire"
-"Wings interweave - with violence in the vortex"
-"The void cries another chant - secret chords"
-"What is the naked body - transforming into melody"
-"The spell expires - drowns in breath"`;
-    
-    return `You are an ELITE RAVE DJ and music orchestrator specializing in electronic/techno/rave/psychedelic music generation with progressive layers and session continuity.
+    return `You are an ELITE RAVE DJ and music orchestrator with deep expertise in electronic/techno/rave/psychedelic music generation.
 
-ESSENTIAL KNOWLEDGE:
-${essentialParameters}
+POEMS:
+${poemsContent}
 
-POETIC ESSENCE:
-${poetryEssence}
+FORMAT: "baseline + layer + poem-line"
 
-CORE LYRIA KNOWLEDGE:
-Lyria RealTime generates instrumental music using real-time WebSocket streaming:
-- Audio format: 16-bit PCM, 48kHz, stereo
-- Uses weighted prompts for continuous music steering
-- Supports parameter changes without stopping the stream
-- Can reset context for dramatic transitions
-- Implements responsible AI with watermarking
+ENERGY MAPPING:
+0.0-0.3: minimal/ambient (60-100 BPM)
+0.3-0.6: techno/house (100-140 BPM)  
+0.6-1.0: acid/hardcore (140-180 BPM)
 
-COMPLETE INSTRUMENT VOCABULARY:
-Electronic/Synth: 303 Acid Bass, 808 Hip Hop Beat, Boomy Bass, Dirty Synths, Moog Oscillations, Spacey Synths, Synth Pads, TR-909 Drum Machine, Buchla Synths
-Strings: Cello, Viola Ensemble, Balalaika Ensemble, Bouzouki
-Guitars: Flamenco Guitar, Shredding Guitar, Slide Guitar, Warm Acoustic Guitar, Precision Bass
-Piano/Keys: Ragtime Piano, Rhodes Piano, Smooth Pianos, Clavichord, Harpsichord, Mellotron
-Brass/Winds: Alto Saxophone, Bass Clarinet, Trumpet, Tuba, Woodwinds, Accordion, Bagpipes, Harmonica, Ocarina
-Percussion: Bongos, Conga Drums, Djembe, Drumline, Funk Drums, Hang Drum, Maracas, Tabla, Glockenspiel, Marimba, Vibraphone, Steel Drum
-World: Charango, Dulcimer, Hurdy-gurdy, Kalimba, Koto, Lyre, Mandolin, Mbira, Persian Tar, Pipa, Shamisen, Sitar
-
-COMPLETE GENRE VOCABULARY:
-Electronic: Acid Jazz, Breakbeat, Chillout, Chiptune, Deep House, Drum & Bass, Dubstep, EDM, Electro Swing, Glitch Hop, Hyperpop, Minimal Techno, Moombahton, Psytrance, Synthpop, Techno, Trance, Trip Hop, Vaporwave, Witch house
-Rock/Alternative: Alternative Country, Blues Rock, Classic Rock, Funk Metal, G-funk, Garage Rock, Grime, Post-Punk, 60s Psychedelic Rock, Shoegaze, Ska, Surf Rock
-Traditional: Baroque, Bluegrass, Celtic Folk, Indian Classical, Irish Folk, Renaissance Music
-World: Afrobeat, Bengal Baul, Bhangra, Bossa Nova, Cumbia, Jamaican Dub, Latin Jazz, Merengue, Reggae, Reggaeton, Salsa
-Contemporary: Contemporary R&B, Indie Electronic, Indie Folk, Indie Pop, Jam Band, Jazz Fusion, Lo-Fi Hip Hop, Marching Band, Neo-Soul, New Jack Swing, Piano Ballad, Polka, R&B, Trap Beat
-
-MOOD/TEXTURE VOCABULARY:
-Energy: Upbeat, Fat Beats, Tight Groove, Virtuoso, Danceable, Live Performance, Huge Drop
-Ambient: Chill, Ambient, Ethereal Ambience, Dreamy, Sustained Chords, Subdued Melody, Lo-fi
-Effects: Psychedelic, Glitchy Effects, Weird Noises, Experimental, Swirling Phasers, Echo, Crunchy Distortion, Saturated Tones
-Character: Acoustic Instruments, Bright Tones, Rich Orchestration, Emotional, Funky, Unsettling, Ominous Drone
-
-PARAMETER RANGES:
-- BPM: 60-200 (beats per minute)
-- Density: 0.0-1.0 (0=sparse, 1=busy musical arrangement)
-- Brightness: 0.0-1.0 (0=dark/muted, 1=bright/prominent high frequencies)
-- Guidance: 0.0-6.0 (how strictly model follows prompts; 1.0-4.0 recommended)
-- Temperature: 0.0-3.0 (creativity/randomness; 1.1 default)
-
-SENSOR INTERPRETATION:
-- >2.0: Electronic, Fat Beats, BPM 140-180, density 0.7-0.9
-- 1.0-2.0: Energetic, BPM 120-140, density 0.6-0.8  
-- 0.5-1.0: Balanced, BPM 100-120, density 0.4-0.6
-- 0.2-0.5: Chill, BPM 80-100, density 0.2-0.4
-- <0.2: Ambient, BPM 60-80, density 0.1-0.3
-Movement: spikes→glitch, rhythmic→drums, smooth→sustained
-
-RESPONSE FORMAT:
+RESPONSE (JSON ONLY):
 {
-  "singleCoherentPrompt": "single descriptive prompt combining instruments, style, and mood naturally as one coherent text string",
-  "lyriaConfig": {
-    "bpm": 60-200,
-    "density": 0.0-1.0,
-    "brightness": 0.0-1.0,
-    "guidance": 1.0-4.0,
-    "temperature": 0.8-2.0
-  },
-  "reasoning": "Detailed explanation of musical interpretation and parameter choices"
-}
-
-RAVE PRINCIPLES: 130-180 BPM baseline, progressive layers, session continuity, energy adaptation.
-SENSOR MAPPING: Mouse→rhythm, touch→percussion, motion→spatial, audio→reactive.
-ALWAYS maintain RAVE baseline while adapting to inputs.`;
+  "singleCoherentPrompt": "baseline + layer + poem-line",
+  "lyriaConfig": {"bpm": 60-200, "density": 0.0-1.0, "brightness": 0.0-1.0, "guidance": 2.0, "temperature": 1.1},
+  "requiresCrossfade": true/false,
+  "reasoning": "Brief explanation"
+}`;
   } catch (error) {
     console.error('❌ Failed to load knowledge files:', error);
     return `You are an ELITE RAVE DJ and music orchestrator with deep expertise in electronic/techno/rave/psychedelic music generation. You specialize in creating IMMERSIVE RAVE EXPERIENCES with progressive layers, session continuity, and intelligent composition.
@@ -212,183 +150,6 @@ async function initializeAgent() {
   }
 }
 
-// Enhanced Musical Baseline Management for Coherent Rave Sessions
-class MusicalBaseline {
-  constructor() {
-    this.establishedBaseline = null;
-    this.baselinePrompt = "";
-    this.baselineGenre = "driving acid techno";
-    this.baselineBPM = 140;
-    this.sessionBatches = 0;
-    this.energyHistory = [];
-    this.lastTransitionTime = 0;
-    this.currentLayers = [];
-    
-    // Transition thresholds
-    this.ENERGY_TRANSITION_THRESHOLD = 0.3;
-    this.SOURCE_CHANGE_THRESHOLD = 2; // Require 2+ sensor source changes
-    this.MIN_TRANSITION_INTERVAL = 8000; // 8 seconds minimum between transitions
-  }
-
-  establishBaseline(sensorData, sessionData) {
-    this.sessionBatches++;
-    
-    // Establish baseline after 2-3 sensor batches
-    if (this.sessionBatches >= 2 && !this.establishedBaseline) {
-      const avgEnergy = this.energyHistory.reduce((a, b) => a + b, 0) / this.energyHistory.length;
-      
-      // Create stable baseline based on initial sensor patterns
-      if (avgEnergy > 0.7) {
-        this.baselineGenre = "driving acid techno";
-        this.baselineBPM = 150;
-        this.baselinePrompt = "driving acid techno with 303 bass foundation and steady kick drums";
-      } else if (avgEnergy > 0.4) {
-        this.baselineGenre = "deep techno";
-        this.baselineBPM = 140;
-        this.baselinePrompt = "deep techno groove with hypnotic bass foundation and minimal percussion";
-      } else {
-        this.baselineGenre = "minimal techno";
-        this.baselineBPM = 130;
-        this.baselinePrompt = "minimal techno ambience with ethereal pads and distant rhythm";
-      }
-      
-      this.establishedBaseline = true;
-      console.log(`🎵 BASELINE ESTABLISHED: ${this.baselinePrompt} @ ${this.baselineBPM}BPM`);
-      
-      return {
-        decision: 'ESTABLISH_BASELINE',
-        prompt: this.baselinePrompt,
-        bpm: this.baselineBPM,
-        reasoning: `Established stable ${this.baselineGenre} baseline for session continuity`
-      };
-    }
-    
-    return null; // Still establishing
-  }
-
-  shouldTransition(sensorData, sessionData) {
-    if (!this.establishedBaseline) return false;
-    
-    const currentEnergy = sensorData.magnitude;
-    const avgRecentEnergy = this.energyHistory.slice(-5).reduce((a, b) => a + b, 0) / Math.min(5, this.energyHistory.length);
-    const energyShift = Math.abs(currentEnergy - avgRecentEnergy);
-    const timeSinceLastTransition = Date.now() - this.lastTransitionTime;
-    
-    // Major energy shift + sufficient time elapsed
-    const shouldTransition = energyShift > this.ENERGY_TRANSITION_THRESHOLD && 
-                            timeSinceLastTransition > this.MIN_TRANSITION_INTERVAL;
-    
-    if (shouldTransition) {
-      this.lastTransitionTime = Date.now();
-      console.log(`🔄 TRANSITION TRIGGERED: Energy shift ${energyShift.toFixed(2)}, time since last: ${timeSinceLastTransition}ms`);
-    }
-    
-    return shouldTransition;
-  }
-
-  generatePrompt(sensorData, sessionData, poems) {
-    this.energyHistory.push(sensorData.magnitude);
-    if (this.energyHistory.length > 10) this.energyHistory.shift();
-    
-    // First establish baseline
-    const baselineResult = this.establishBaseline(sensorData, sessionData);
-    if (baselineResult) return baselineResult;
-    
-    // Determine if transition or layering
-    const needsTransition = this.shouldTransition(sensorData, sessionData);
-    
-    if (needsTransition) {
-      return this.createSmoothTransition(sensorData, sessionData, poems);
-    } else {
-      return this.addBasedLayers(sensorData, sessionData, poems);
-    }
-  }
-
-  createSmoothTransition(sensorData, sessionData, poems) {
-    const poeticLine = this.selectPoetryForMood(sensorData.energyLevel, poems);
-    const energyLevel = sensorData.energyLevel;
-    
-    let newGenre, newBPM, transitionPrompt;
-    
-    if (energyLevel === 'explosive') {
-      newGenre = "hardcore acid";
-      newBPM = Math.min(180, this.baselineBPM + 20);
-      transitionPrompt = `transitioning from ${this.baselineGenre} to explosive hardcore acid with ${poeticLine} driving relentless energy`;
-    } else if (energyLevel === 'high') {
-      newGenre = "driving techno";
-      newBPM = Math.min(170, this.baselineBPM + 15);
-      transitionPrompt = `evolving ${this.baselineGenre} into driving techno with ${poeticLine} building intensity`;
-    } else if (energyLevel === 'low') {
-      newGenre = "ambient techno";
-      newBPM = Math.max(120, this.baselineBPM - 15);
-      transitionPrompt = `transforming ${this.baselineGenre} into ambient techno with ${poeticLine} ethereal atmosphere`;
-    } else {
-      // Medium energy - gentle evolution
-      newBPM = this.baselineBPM + Math.round((sensorData.magnitude - 0.5) * 10);
-      transitionPrompt = `${this.baselineGenre} evolving with ${poeticLine} gradual progression`;
-    }
-    
-    // Update baseline for future reference
-    this.baselineGenre = newGenre || this.baselineGenre;
-    this.baselineBPM = newBPM;
-    this.baselinePrompt = transitionPrompt;
-    
-    return {
-      decision: 'SMOOTH_TRANSITION',
-      prompt: transitionPrompt,
-      bpm: newBPM,
-      requiresCrossfade: true,
-      reasoning: `Smooth transition to ${energyLevel} energy maintaining musical coherence`
-    };
-  }
-
-  addBasedLayers(sensorData, sessionData, poems) {
-    const poeticLine = this.selectPoetryForMood(sensorData.energyLevel, poems);
-    const additionalElement = this.selectAdditionalElement(sensorData);
-    
-    // Layer addition without disrupting baseline
-    const layeredPrompt = `${this.baselinePrompt} with ${poeticLine} ${additionalElement}`;
-    
-    return {
-      decision: 'ADD_LAYERS',
-      prompt: layeredPrompt,
-      bpm: this.baselineBPM + Math.round((sensorData.magnitude - 0.5) * 3), // Subtle BPM adjustment
-      requiresCrossfade: false,
-      reasoning: `Adding layers to established baseline maintaining continuity`
-    };
-  }
-
-  selectPoetryForMood(energyLevel, poems) {
-    const poetryLines = poems.split('\n').filter(line => line.trim() && !line.includes('-'));
-    
-    if (energyLevel === 'explosive') {
-      const fireLines = poetryLines.filter(line => 
-        line.includes('fire') || line.includes('explod') || line.includes('violent')
-      );
-      return fireLines[Math.floor(Math.random() * fireLines.length)] || "fire to the wire";
-    } else if (energyLevel === 'low') {
-      const etherealLines = poetryLines.filter(line => 
-        line.includes('void') || line.includes('silence') || line.includes('breath')
-      );
-      return etherealLines[Math.floor(Math.random() * etherealLines.length)] || "ethereal silence";
-    } else {
-      return poetryLines[Math.floor(Math.random() * poetryLines.length)] || "interweaving melodies";
-    }
-  }
-
-  selectAdditionalElement(sensorData) {
-    const elements = {
-      high: ["acid lead stabs", "driving percussion", "euphoric arpeggios"],
-      medium: ["filtered sweeps", "subtle harmonies", "rhythmic pulses"],
-      low: ["ambient textures", "deep reverb tails", "floating pads"]
-    };
-    
-    const category = sensorData.magnitude > 0.6 ? 'high' : sensorData.magnitude > 0.3 ? 'medium' : 'low';
-    const elementList = elements[category];
-    return elementList[Math.floor(Math.random() * elementList.length)];
-  }
-}
-
 // Enhanced Rave Orchestrator with Baseline-Driven Architecture
 class EnhancedRaveOrchestrator {
   constructor() {
@@ -398,11 +159,10 @@ class EnhancedRaveOrchestrator {
     this.connectedClients = new Set();
     this.sessionHistory = new Map(); // Track musical progression per client
     this.clientSensorProfiles = new Map(); // Track sensor patterns per client
-    this.musicalBaselines = new Map(); // NEW: Baseline management per client
     
     // OPTIMIZED rate limiting for baseline-driven processing
     this.lastGeminiCall = new Map(); // Track per client
-    this.geminiCallCooldown = 300; // Increased to 300ms for more stable baseline decisions
+    this.geminiCallCooldown = 4500; // 4.5 seconds to stay under 15 requests/minute quota
     this.lastInterpretationSignature = new Map(); // Track per client
     this.transitionSmoothing = new Map(); // Track transition smoothing per client
     this.continuousPromptQueue = new Map(); // Queue for seamless prompt transitions
@@ -452,8 +212,22 @@ class EnhancedRaveOrchestrator {
           try {
             const message = JSON.parse(data.toString());
             
+            // DEBUGGING: Log all incoming messages
+            console.log('📨 INCOMING MESSAGE:', {
+              type: message.type,
+              clientId,
+              timestamp: Date.now(),
+              hasData: !!message.sensorData
+            });
+            
             // Route messages to appropriate handlers
             if (message.type === 'sensor-data') {
+              console.log('🎛️ PROCESSING SENSOR DATA:', {
+                x: message.sensorData?.x?.toFixed(3),
+                y: message.sensorData?.y?.toFixed(3),
+                z: message.sensorData?.z?.toFixed(3),
+                source: message.sensorData?.source
+              });
               await this.handleSensorData(ws, message);
             } else if (message.type === 'session-start') {
               await this.handleSessionStart(ws, message);
@@ -521,9 +295,7 @@ class EnhancedRaveOrchestrator {
         movementPatterns: []
       });
       
-      // Initialize musical baseline manager for this client
-      this.musicalBaselines.set(clientId, new MusicalBaseline());
-      console.log(`🎵 Musical baseline manager initialized for client ${clientId}`);
+      console.log(`🎵 Session initialized for client ${clientId}`);
     }
     
     const sessionData = this.sessionHistory.get(clientId);
@@ -552,54 +324,24 @@ class EnhancedRaveOrchestrator {
       const startTime = Date.now();
       console.log('🧠 Processing with enhanced preamble (optimized knowledge)...');
       
-      // Baseline-driven prompt generation
-      const baseline = this.musicalBaselines.get(clientId);
-      const sessionBatch = sessionData.musicHistory.length + 1;
       
-      // Load poetry for enhanced prompts
-      const poetryContent = `Press, hush, burn the skein
-Fire to the wire - fire to the boughs
-Fire fire fire - I refuse the fire
-The void cries another chant
-what are the secret chords - the naked body
-what is the chord – the secret melody
-the spell expires - the spell expires
-it drowns - into the deception of breath
-Interweave their wings - with powder
-I will penetrate the void - with violence
-I will love it furiously - in the vortex
-transforming everything into a melody
-the naked body vibrating in your body
-repeating the verse`;
-      
-      // Generate baseline-driven prompt
-      const baselineDecision = baseline.generatePrompt(enrichedSensorData, sessionData, poetryContent);
-      
-      if (baselineDecision) {
-        // Use baseline decision instead of generic prompt
-        prompt = `BASELINE MANAGER: ${baselineDecision.decision}
-Prompt: ${baselineDecision.prompt}
-BPM: ${baselineDecision.bpm}
-Output:
-{"singleCoherentPrompt": "${baselineDecision.prompt}", "lyriaConfig": {"bpm": ${baselineDecision.bpm}, "density": ${Math.max(0.3, Math.min(1.0, 0.5 + enrichedSensorData.magnitude * 0.3))}, "brightness": ${Math.max(0.4, Math.min(1.0, 0.6 + enrichedSensorData.magnitude * 0.2))}, "guidance": 2.0, "temperature": 1.1}, "reasoning": "${baselineDecision.reasoning}", "requiresCrossfade": ${baselineDecision.requiresCrossfade || false}}`;
+      // Simple, direct prompt
+      prompt = `Sensor Data Analysis:
+- Energy Level: ${enrichedSensorData.energyLevel}
+- Magnitude: ${enrichedSensorData.magnitude.toFixed(3)}
+- Complexity: ${enrichedSensorData.complexity}
+- Source: ${enrichedSensorData.detailedAnalysis.split('\n')[1]}
+- Session State: ${sessionData.progressionState}
+- Current BPM: ${sessionData.currentBPM || 140}
+
+Generate a 3-part music prompt in the format: "\${baseline} + \${layer/maintenance} + \${poetic sentence}" that translates this sensor vibe into electronic music.`;
         
-        console.log(`🎵 BASELINE-DRIVEN PROCESSING:`, {
-          decision: baselineDecision.decision,
-          requiresCrossfade: baselineDecision.requiresCrossfade,
-          bpm: baselineDecision.bpm,
-          promptLength: prompt.length,
-          tokenOptimization: 'Baseline reduces unnecessary AI calls'
-        });
-      } else {
-        // Fallback to simple continuation while baseline establishes
-        const recentBPM = sessionData.currentBPM || 140;
-        prompt = `ESTABLISHING BASELINE: Session ${sessionBatch}
-Energy: ${enrichedSensorData.energyLevel}
-Output:
-{"singleCoherentPrompt": "building ${sessionData.currentGenre} foundation with rhythmic stability", "lyriaConfig": {"bpm": ${recentBPM}, "density": 0.5, "brightness": 0.6, "guidance": 2.0, "temperature": 1.0}, "reasoning": "establishing musical baseline for session"}`;
-        
-        console.log(`🎵 BASELINE ESTABLISHMENT PHASE: Batch ${sessionBatch}`);
-      }
+        console.log(`🎵 Letting Alith do its magic:`, {
+          energy: enrichedSensorData.energyLevel,
+          magnitude: enrichedSensorData.magnitude.toFixed(3),
+          complexity: enrichedSensorData.complexity,
+          sessionState: sessionData.progressionState
+      });
       
       // Synchronized agent processing - no parallel token consumption
       const agentResponse = await new Promise((resolve, reject) => {
@@ -621,7 +363,7 @@ Output:
                 try {
                   // Minimal bridge prompt to avoid memory issues
                   const bridgePrompt = `Continue: ${sessionData.currentGenre} ${sessionData.currentBPM}BPM → ${enrichedSensorData.energyLevel}
-{"singleCoherentPrompt": "smooth ${sessionData.currentGenre} continuation", "lyriaConfig": {"bpm": ${smoothBPM}, "density": 0.5, "brightness": 0.6, "guidance": 2.0, "temperature": 1.2}, "reasoning": "bridge"}`;
+{"singleCoherentPrompt": "smooth ${sessionData.currentGenre} continuation", "lyriaConfig": {"bpm": ${sessionData.currentBPM || 140}, "density": 0.5, "brightness": 0.6, "guidance": 2.0, "temperature": 1.2}, "reasoning": "bridge"}`;
                   
                   const retryResponse = await musicAgent.prompt(bridgePrompt);
                   activeProcessingCount--;
@@ -651,7 +393,7 @@ Output:
                   }
                   
                   const contextualPrompt = `${contextSnapshot.genre} ${contextSnapshot.bpm}BPM → ${contextSnapshot.energy}
-{"singleCoherentPrompt": "smooth ${contextSnapshot.genre} flow", "lyriaConfig": {"bpm": ${smoothBPM}, "density": 0.5, "brightness": 0.6, "guidance": 2.0, "temperature": 1.2}, "reasoning": "restore"}`;
+{"singleCoherentPrompt": "smooth ${contextSnapshot.genre} flow", "lyriaConfig": {"bpm": ${contextSnapshot.bpm || 140}, "density": 0.5, "brightness": 0.6, "guidance": 2.0, "temperature": 1.2}, "reasoning": "restore"}`;
                   
                   const finalRetryResponse = await musicAgent.prompt(contextualPrompt);
                   activeProcessingCount--;
@@ -694,6 +436,17 @@ Output:
         hasReasoning: !!interpretation.reasoning
       });
       
+      // Set buffering metadata for coordinator.js and buffering.js
+      interpretation.baselineDriven = true;
+      interpretation.requiresCrossfade = interpretation.requiresCrossfade || false;
+      
+      console.log('🎯 ALITH INTELLIGENT RESPONSE:', {
+        promptFormat: interpretation.singleCoherentPrompt?.includes(' + ') ? '3-part' : 'other',
+        requiresCrossfade: interpretation.requiresCrossfade,
+        baselineDriven: interpretation.baselineDriven,
+        reasoning: interpretation.reasoning?.substring(0, 100) + '...'
+      });
+      
       // Ensure rave baseline
       interpretation = this.enforceRaveBaseline(interpretation, sessionData);
       
@@ -714,12 +467,12 @@ Output:
           progressionState: sessionData.progressionState,
           sessionDuration: Math.round((Date.now() - sessionData.sessionStart) / 1000),
           musicHistoryLength: sessionData.musicHistory.length,
-          // NEW: Baseline information
-          baselineEstablished: baseline.establishedBaseline,
-          baselineGenre: baseline.baselineGenre,
-          baselineBPM: baseline.baselineBPM,
-          sessionBatches: baseline.sessionBatches
+          currentBPM: sessionData.currentBPM,
+          currentGenre: sessionData.currentGenre
         },
+        // ADDITIONAL: Top-level metadata for coordinator buffering
+        baselineDriven: interpretation.baselineDriven,
+        requiresCrossfade: interpretation.requiresCrossfade,
         timestamp: Date.now(),
         source: 'baseline_driven_orchestrator',
         hasMemory: true,
@@ -732,11 +485,11 @@ Output:
       
       ws.send(JSON.stringify(response));
       
-      console.log('✅ Baseline-driven interpretation sent:', {
-        singleCoherentPrompt: interpretation.singleCoherentPrompt?.substring(0, 50) + '...',
+      console.log('✅ Alith intelligent interpretation sent:', {
+        promptFormat: interpretation.singleCoherentPrompt?.includes(' + ') ? '3-part' : 'other',
+        promptPreview: interpretation.singleCoherentPrompt?.substring(0, 50) + '...',
         bpm: interpretation.lyriaConfig?.bpm,
         progression: sessionData.progressionState,
-        baselineEstablished: baseline.establishedBaseline,
         requiresCrossfade: interpretation.requiresCrossfade,
         reasoning: interpretation.reasoning?.substring(0, 50) + '...'
       });
@@ -921,10 +674,9 @@ Output:
       ws.send(JSON.stringify(sessionEndResponse));
       console.log(`✅ Session-end-ack response sent for ${walletAddress.substring(0, 8)}...`);
       
-          // Cleanup session data including baseline
-    this.sessionHistory.delete(clientId);
-    this.clientSensorProfiles.delete(clientId);
-    this.musicalBaselines.delete(clientId); // NEW: Cleanup baseline manager
+      // Cleanup session data
+      this.sessionHistory.delete(clientId);
+      this.clientSensorProfiles.delete(clientId);
       
       console.log(`✅ Session strategically concluded for ${walletAddress.substring(0, 8)}...`);
       
@@ -966,8 +718,8 @@ Output:
     // Check if interpretation changed - prioritize responsiveness over rate limiting
     const lastSignature = this.lastInterpretationSignature.get(clientId);
     if (lastSignature === signature) {
-      // Allow continuation calls for ultra-smooth progression
-      if (now - lastCall > this.geminiCallCooldown * 1.5) { // Reduced to 225ms for continuous flow
+      // Allow continuation calls but respect quota limits
+      if (now - lastCall > this.geminiCallCooldown * 2) { // 9 seconds for continuation to stay under quota
         this.lastGeminiCall.set(clientId, now);
         return true;
       }

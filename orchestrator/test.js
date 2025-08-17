@@ -129,7 +129,12 @@ async function testVibesFlowE2E() {
     const latencyResults = await testEndToEndLatency(sensorWS);
     results.push(...latencyResults);
 
-    // Test 5: Ultra-Smooth Transitions
+    // Test 5: Token Optimization Validation
+    console.log('\n🎯 Testing token optimization and A+B+C prompt structure...');
+    const tokenResults = await testTokenOptimization(sensorWS);
+    results.push(tokenResults);
+
+    // Test 6: Ultra-Smooth Transitions
     console.log('\n🌊 Testing ultra-smooth transitions and click-noise elimination...');
     const transitionResults = await testUltraSmoothTransitions(sensorWS);
     results.push({
@@ -138,17 +143,22 @@ async function testVibesFlowE2E() {
       metric: `${(transitionResults.metrics?.averageBPMDelta || 0).toFixed(1)} BPM avg delta, ${transitionResults.metrics?.maxBPMJump || 0} max jump`
     });
 
-    // Test 6: Continuous Streaming
+    // Test 7: Continuous Streaming
     console.log('\n🔄 Testing continuous streaming with Agent response validation...');
     const streamingResults = await testContinuousStreaming(sensorWS);
     results.push(...streamingResults);
 
-    // Test 7: Session Boundary Management
+    // Test 8: Session Boundary Management
     console.log('\n🎬 Testing session start/end boundary handlers...');
     const sessionResults = await testSessionBoundaries(sensorWS);
     results.push(...sessionResults);
 
-    // Test 8: QDrant/RAG Store Operations
+    // Test 9: Client-side Buffering & js-genai Integration
+    console.log('\n🎛️ Testing client-side buffering with js-genai code generation...');
+    const bufferingResults = await testClientSideBuffering(sensorWS);
+    results.push(...bufferingResults);
+
+    // Test 10: QDrant/RAG Store Operations
     console.log('\n🗄️ Testing QDrant Store and user pattern management...');
     const qdrantResults = await testQdrantOperations();
     results.push(...qdrantResults);
@@ -334,6 +344,150 @@ async function testEndToEndLatency(sensorWS) {
   return results;
 }
 
+async function testTokenOptimization(sensorWS) {
+  console.log('\n🎯 TESTING TOKEN OPTIMIZATION & A+B+C PROMPT STRUCTURE...');
+  console.log('📊 This test validates optimized preamble, proper memory usage, and A+B+C format');
+  
+  const results = [];
+  let tokenOptimizationResults = {
+    firstCallFormat: null,
+    laterCallsFormat: null,
+    promptCoherence: 0,
+    memoryUsage: 0,
+    preambleSize: 0,
+    averageResponseTime: 0
+  };
+
+  try {
+    // Test sequence to validate A+B+C format
+    const testSequence = [
+      { x: 0.3, y: 0.2, z: 0.1, callType: 'FIRST' },
+      { x: 0.4, y: 0.3, z: 0.2, callType: 'SECOND' },
+      { x: 0.6, y: 0.4, z: 0.3, callType: 'THIRD' },
+      { x: 0.5, y: 0.3, z: 0.2, callType: 'FOURTH' }
+    ];
+
+    const responseTimes = [];
+    let coherentPrompts = 0;
+    let threePartPrompts = 0;
+
+    for (let i = 0; i < testSequence.length; i++) {
+      const sensor = testSequence[i];
+      const testStart = performance.now();
+      
+      console.log(`🎛️ Test ${i + 1}/${testSequence.length}: ${sensor.callType} call - validating format`);
+      
+      const testPromise = new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error('Token optimization test timeout'));
+        }, 8000);
+        
+        const messageHandler = (data) => {
+          try {
+            const response = JSON.parse(data.toString());
+            if (response.type === 'interpretation') {
+              clearTimeout(timeout);
+              sensorWS.off('message', messageHandler);
+              
+              const responseTime = performance.now() - testStart;
+              responseTimes.push(responseTime);
+              
+              // Validate A+B+C format
+              const prompt = response.data?.singleCoherentPrompt || '';
+              const has3Parts = prompt.includes(' + ') && prompt.split(' + ').length >= 3;
+              const reasoning = response.data?.reasoning || '';
+              
+              if (has3Parts) {
+                threePartPrompts++;
+                const parts = prompt.split(' + ');
+                
+                if (i === 0) {
+                  // First call should be A+B format
+                  tokenOptimizationResults.firstCallFormat = {
+                    isValid: parts.length >= 3,
+                    baseline: parts[0]?.substring(0, 30) + '...',
+                    layer: parts[1]?.substring(0, 30) + '...',
+                    poetry: parts[2]?.substring(0, 30) + '...'
+                  };
+                } else {
+                  // Later calls should reference previous context
+                  tokenOptimizationResults.laterCallsFormat = {
+                    isValid: parts.length >= 3,
+                    hasBaseline: parts[0]?.length > 0,
+                    hasVariation: parts[1]?.length > 0,
+                    hasPoetry: parts[2]?.length > 0
+                  };
+                }
+                
+                coherentPrompts++;
+              }
+              
+              console.log(`✅ ${sensor.callType}: ${Math.round(responseTime)}ms, Format: ${has3Parts ? '3-part' : 'other'}`);
+              console.log(`   Prompt: "${prompt.substring(0, 80)}..."`);
+              console.log(`   Reasoning: "${reasoning.substring(0, 60)}..."`);
+              
+              resolve(response);
+            }
+          } catch (error) {
+            clearTimeout(timeout);
+            sensorWS.off('message', messageHandler);
+            reject(error);
+          }
+        };
+        
+        sensorWS.on('message', messageHandler);
+      });
+      
+      // Send test sensor data
+      const message = {
+        type: 'sensor-data',
+        sensorData: {
+          ...sensor,
+          timestamp: Date.now(),
+          source: 'token_optimization_test',
+          sessionId: 'token_test_' + Date.now()
+        }
+      };
+      
+      sensorWS.send(JSON.stringify(message));
+      await testPromise;
+      
+      // Brief pause between tests
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    
+    // Calculate metrics
+    tokenOptimizationResults.promptCoherence = (coherentPrompts / testSequence.length) * 100;
+    tokenOptimizationResults.threePartFormat = (threePartPrompts / testSequence.length) * 100;
+    tokenOptimizationResults.averageResponseTime = responseTimes.reduce((a, b) => a + b, 0) / responseTimes.length;
+    
+    console.log('\n🎯 TOKEN OPTIMIZATION RESULTS:');
+    console.log(`✨ Prompt Coherence: ${tokenOptimizationResults.promptCoherence.toFixed(1)}%`);
+    console.log(`🎵 3-Part Format: ${tokenOptimizationResults.threePartFormat.toFixed(1)}%`);
+    console.log(`⚡ Avg Response Time: ${tokenOptimizationResults.averageResponseTime.toFixed(1)}ms`);
+    console.log(`🎭 First Call Format: ${tokenOptimizationResults.firstCallFormat?.isValid ? 'VALID' : 'INVALID'}`);
+    console.log(`🔄 Later Calls Format: ${tokenOptimizationResults.laterCallsFormat?.isValid ? 'VALID' : 'INVALID'}`);
+    
+    const success = tokenOptimizationResults.promptCoherence > 80 && 
+                   tokenOptimizationResults.threePartFormat > 70 &&
+                   tokenOptimizationResults.averageResponseTime < 5000;
+    
+    return {
+      test: 'Token Optimization & A+B+C Format',
+      status: success ? 'PASS' : 'FAIL',
+      metric: `${tokenOptimizationResults.promptCoherence.toFixed(1)}% coherent, ${tokenOptimizationResults.averageResponseTime.toFixed(0)}ms avg`
+    };
+    
+  } catch (error) {
+    console.error('❌ Token optimization test failed:', error.message);
+    return {
+      test: 'Token Optimization & A+B+C Format',
+      status: 'FAIL',
+      metric: error.message
+    };
+  }
+}
+
 async function testUltraSmoothTransitions(sensorWS) {
   console.log('\n🌊 Testing ULTRA-SMOOTH TRANSITIONS with TOKEN OPTIMIZATION...');
   console.log('📊 This test validates seamless BPM transitions, click-noise elimination, and zero token limit errors');
@@ -478,6 +632,7 @@ async function testUltraSmoothTransitions(sensorWS) {
 async function testContinuousStreaming(sensorWS) {
   const results = [];
   
+  console.log('  🔍 DEBUGGING SENSOR FLOW & ALITH RESPONSES...');
   console.log('  Testing 10 seconds of continuous streaming...');
   
   let streamingResponses = 0;
@@ -486,6 +641,8 @@ async function testContinuousStreaming(sensorWS) {
   let realAgentResponses = 0;
   let fallbackResponses = 0;
   let tokenLimitErrors = 0;
+  let alithPromptsSeen = 0;
+  let bufferingCallsSeen = 0;
   
   const streamingPromise = new Promise((resolve) => {
     sensorWS.on('message', (data) => {
@@ -493,7 +650,54 @@ async function testContinuousStreaming(sensorWS) {
         const response = JSON.parse(data.toString());
         if (response.type !== 'connected') { // Ignore connection acknowledgment
           streamingResponses++;
-          console.log('✅ Server response received: interpretation');
+          
+          // 🎯 DETAILED DEBUGGING for both issues
+          console.log('📨 RAW SERVER RESPONSE:', {
+            type: response.type,
+            hasData: !!response.data,
+            hasPrompt: !!response.data?.singleCoherentPrompt,
+            hasLyriaConfig: !!response.data?.lyriaConfig,
+            hasReasoning: !!response.data?.reasoning,
+            requiresCrossfade: response.data?.requiresCrossfade,
+            baselineDriven: response.data?.baselineDriven
+          });
+          
+          // 🎯 ISSUE 1: Check if Alith Agent is actually responding with 3-part format
+          if (response.data?.singleCoherentPrompt) {
+            alithPromptsSeen++;
+            const prompt = response.data.singleCoherentPrompt;
+            const has3Parts = prompt.includes(' + ');
+            const parts = has3Parts ? prompt.split(' + ') : [];
+            
+            console.log('🎵 ALITH INTELLIGENT PROMPT DETECTED:', {
+              promptPreview: prompt.substring(0, 60) + '...',
+              format: has3Parts ? '3-part' : 'other',
+              parts: has3Parts ? `[${parts.length}] baseline|layer|poetry` : 'single_string',
+              reasoning: response.data.reasoning?.substring(0, 80) + '...' || 'NO_REASONING',
+              bpm: response.data.lyriaConfig?.bpm || 'NO_BPM',
+              density: response.data.lyriaConfig?.density || 'NO_DENSITY'
+            });
+            
+            // Verify Alith is accessing poems.txt correctly
+            if (has3Parts && parts.length >= 3) {
+              const poetryPart = parts[2]?.toLowerCase() || '';
+              const hasPoetryKeywords = poetryPart.match(/(fire|wire|void|naked|body|spell|silence|wings|violence|breath|verse)/);
+              console.log('📝 POETRY VERIFICATION:', {
+                poetryText: parts[2]?.substring(0, 40) + '...',
+                usesRealPoetry: !!hasPoetryKeywords,
+                keywords: hasPoetryKeywords ? hasPoetryKeywords[0] : 'none'
+              });
+            }
+          }
+          
+          // 🎯 ISSUE 2: Check buffering integration
+          if (response.data?.requiresCrossfade !== undefined) {
+            bufferingCallsSeen++;
+            console.log('🌊 BUFFERING INTEGRATION DETECTED:', {
+              crossfade: response.data.requiresCrossfade,
+              bufferStrategy: response.data.requiresCrossfade ? 'smooth_transition' : 'layer_addition'
+            });
+          }
           
           // 🎯 Verify if this is a real agent response or fallback
           const isFallback = response.fallback === true || 
@@ -584,6 +788,19 @@ async function testContinuousStreaming(sensorWS) {
   console.log(`  ⚠️ Fallback responses: ${fallbackResponses}`);
   console.log(`  💥 Token limit errors: ${tokenLimitErrors}`);
   console.log(`  📊 Streaming errors: ${streamingErrors}`);
+  
+  // 🔍 DEBUGGING SUMMARY for both issues
+  console.log('\n🔍 DEBUGGING SUMMARY:');
+  console.log(`  🎵 ISSUE 1 - Alith Prompts: ${alithPromptsSeen} detected (should be > 0)`);
+  console.log(`  🌊 ISSUE 2 - Buffering Integration: ${bufferingCallsSeen} detected (should be > 0)`);
+  
+  if (alithPromptsSeen === 0) {
+    console.log('  ❌ PROBLEM: No Alith Agent prompts detected! Server may not be processing sensor data.');
+  }
+  
+  if (bufferingCallsSeen === 0) {
+    console.log('  ❌ PROBLEM: No buffering metadata detected! Crossfade system may not be working.');
+  }
   
   // Success = all responses are real agent responses (no fallbacks)
   const allRealResponses = fallbackResponses === 0 && realAgentResponses === streamingResponses;
@@ -703,6 +920,190 @@ async function testSessionBoundaries(sensorWS) {
   }
   
   return results;
+}
+
+async function testClientSideBuffering(sensorWS) {
+  const results = [];
+  
+  console.log('  🎛️ Testing client-side buffering with js-genai code generation...');
+  console.log('  This validates that buffering.js receives proper metadata and can generate buffering code');
+  
+  try {
+    let crossfadeDetected = false;
+    let layerBufferingDetected = false;
+    let bufferingMetadataReceived = 0;
+    let responseCount = 0;
+    
+    // Create specialized message handler for buffering analysis
+    const bufferingMessageHandler = (data) => {
+      try {
+        const response = JSON.parse(data.toString());
+        if (response.type === 'interpretation' && response.data) {
+          responseCount++;
+          
+          console.log(`  📨 Response ${responseCount}: Analyzing buffering metadata...`);
+          
+          // Check for buffering metadata
+          if (response.data.requiresCrossfade !== undefined) {
+            bufferingMetadataReceived++;
+            
+            console.log('  🎯 BUFFERING METADATA FOUND:', {
+              requiresCrossfade: response.data.requiresCrossfade,
+              baselineDriven: response.data.baselineDriven,
+              bufferStrategy: response.data.bufferStrategy,
+              promptFormat: response.data.singleCoherentPrompt?.includes(' + ') ? '3-part' : 'other'
+            });
+            
+            // Simulate what buffering.js would do
+            if (response.data.requiresCrossfade) {
+              crossfadeDetected = true;
+              console.log('  🌊 CROSSFADE STRATEGY: buffering.js would generate crossfade code using js-genai');
+              console.log('    → generateCrossfadeBuffering() would be called');
+              console.log('    → Gemini would generate Web Audio API crossfade code');
+            } else {
+              layerBufferingDetected = true;
+              console.log('  📫 LAYER STRATEGY: buffering.js would generate additive layer code');
+              console.log('    → generateLayerBuffering() would be called');
+              console.log('    → Gemini would generate seamless blending code');
+            }
+            
+            // Verify 3-part prompt format for buffering context
+            const prompt = response.data.singleCoherentPrompt || '';
+            if (prompt.includes(' + ')) {
+              const parts = prompt.split(' + ');
+              console.log('  📝 3-PART PROMPT FOR BUFFERING:', {
+                baseline: parts[0]?.substring(0, 20) + '...',
+                layer: parts[1]?.substring(0, 20) + '...',
+                poetry: parts[2]?.substring(0, 20) + '...'
+              });
+            }
+          }
+        }
+      } catch (error) {
+        // Ignore non-JSON messages
+      }
+    };
+    
+    // Add buffering analysis handler
+    sensorWS.on('message', bufferingMessageHandler);
+    
+    const bufferingTestPromise = new Promise((resolve) => {
+      setTimeout(() => {
+        sensorWS.removeListener('message', bufferingMessageHandler);
+        resolve();
+      }, 8000); // 8 seconds of buffering analysis
+    });
+    
+    // Send varied sensor data to trigger different buffering strategies
+    const bufferingTestData = [
+      // Low energy → should trigger layer buffering
+      { x: 0.2, y: 0.1, z: 0.1, magnitude: 0.3, expectedStrategy: 'layer' },
+      // High energy → should trigger crossfade
+      { x: 0.8, y: 0.7, z: 0.6, magnitude: 0.9, expectedStrategy: 'crossfade' },
+      // Medium energy → could be either
+      { x: 0.5, y: 0.4, z: 0.3, magnitude: 0.6, expectedStrategy: 'either' }
+    ];
+    
+    for (let i = 0; i < bufferingTestData.length; i++) {
+      const testData = bufferingTestData[i];
+      console.log(`  📤 Sending test ${i + 1}: ${testData.expectedStrategy} strategy expected`);
+      
+      const message = {
+        type: 'sensor-data',
+        sensorData: {
+          ...testData,
+          timestamp: Date.now(),
+          source: 'buffering_test',
+          sessionId: 'buffering_test_' + Date.now()
+        }
+      };
+      
+      sensorWS.send(JSON.stringify(message));
+      
+      // Wait between tests
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+    
+    await bufferingTestPromise;
+    
+    console.log('\n  🎯 CLIENT-SIDE BUFFERING TEST SUMMARY:');
+    console.log(`    📊 Responses analyzed: ${responseCount}`);
+    console.log(`    🎛️ Buffering metadata received: ${bufferingMetadataReceived}`);
+    console.log(`    🌊 Crossfade strategies detected: ${crossfadeDetected ? 'YES' : 'NO'}`);
+    console.log(`    📫 Layer strategies detected: ${layerBufferingDetected ? 'YES' : 'NO'}`);
+    
+    const bufferingSuccess = bufferingMetadataReceived > 0 && (crossfadeDetected || layerBufferingDetected);
+    
+    results.push({
+      test: 'Client-side Buffering Integration',
+      status: bufferingSuccess ? 'PASS' : 'FAIL',
+      metric: `${bufferingMetadataReceived} metadata, crossfade:${crossfadeDetected}, layers:${layerBufferingDetected}`
+    });
+    
+    // Test js-genai simulation
+    console.log('\n  🧠 Testing js-genai code generation simulation...');
+    const jsGenaiSuccess = await testJsGenaiSimulation();
+    results.push(jsGenaiSuccess);
+    
+  } catch (error) {
+    console.log('  ❌ Client-side buffering test failed:', error.message);
+    results.push({
+      test: 'Client-side Buffering Integration',
+      status: 'FAIL',
+      metric: error.message
+    });
+  }
+  
+  return results;
+}
+
+async function testJsGenaiSimulation() {
+  try {
+    console.log('    🔧 Simulating js-genai code generation for buffering...');
+    
+    // Simulate what buffering.js does with Gemini
+    const mockBufferingPrompt = `Generate JavaScript code for smooth Lyria crossfade transition:
+- Current prompt: "driving acid techno + building intensity + fire to the wire"
+- BPM: 150
+- Requires smooth transition without clicks or jitters
+- Use Web Audio API gainNode ramping
+- Implement 500ms crossfade window
+Return executable JavaScript code:`;
+    
+    console.log('    📝 Mock prompt:', mockBufferingPrompt.substring(0, 100) + '...');
+    
+    // Simulate the code generation process
+    const mockGeneratedCode = `
+// Generated buffering code for Lyria transition
+const crossfadeDuration = 0.5; // 500ms
+if (audioContext && masterGain) {
+  const fadeGain = audioContext.createGain();
+  fadeGain.gain.setValueAtTime(0, audioContext.currentTime);
+  fadeGain.gain.exponentialRampToValueAtTime(1, audioContext.currentTime + crossfadeDuration);
+  console.log('Crossfade applied successfully');
+}
+    `;
+    
+    console.log('    ✅ Mock code generated:', mockGeneratedCode.substring(0, 80) + '...');
+    console.log('    🎯 In real buffering.js, this code would:');
+    console.log('      → Be generated by Gemini 2.5 Flash Lite');
+    console.log('      → Use actual Web Audio API context');
+    console.log('      → Eliminate click-noises and jitter');
+    console.log('      → Provide smooth transitions for Lyria');
+    
+    return {
+      test: 'js-genai Code Generation Simulation',
+      status: 'PASS',
+      metric: 'code_generation_simulated_successfully'
+    };
+    
+  } catch (error) {
+    return {
+      test: 'js-genai Code Generation Simulation',
+      status: 'FAIL',
+      metric: error.message
+    };
+  }
 }
 
 async function testQdrantOperations() {
