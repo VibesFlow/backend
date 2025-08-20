@@ -180,12 +180,30 @@ class EnhancedRaveOrchestrator {
       res.json({ status: 'ok', timestamp: Date.now() });
     });
     
+    // Active sessions endpoint for LiveTracker
+    this.app.get('/active-sessions', (req, res) => {
+      const activeSessions = Array.from(this.sessionHistory.entries())
+        .filter(([clientId, sessionData]) => sessionData.vibeId && sessionData.walletAddress)
+        .map(([clientId, sessionData]) => ({
+          vibeId: sessionData.vibeId,
+          creator: sessionData.walletAddress,
+          startedAt: sessionData.sessionStart,
+          clientId: clientId
+        }));
+      
+      res.json({
+        activeSessions,
+        totalSessions: activeSessions.length,
+        timestamp: new Date().toISOString()
+      });
+    });
+    
     // Root endpoint
     this.app.get('/', (req, res) => {
       res.json({ 
         service: 'VibesFlow Alith Orchestrator',
         version: '3.0.0',
-        endpoints: ['/health', '/ws (WebSocket)']
+        endpoints: ['/health', '/active-sessions', '/ws (WebSocket)']
       });
     });
   }

@@ -1,0 +1,31 @@
+{
+  "name": "vibesflow-streaming",
+  "version": "1.0.0",
+  "description": "VibesFlow Streaming Backend - Lyria Audio Capture and SRS Streaming",
+  "main": "lyria.js",
+  "scripts": {
+    "start": "node lyria.js",
+    "srs": "node srs.js",
+    "dev": "nodemon lyria.js",
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "ws": "^8.14.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  },
+  "keywords": [
+    "streaming",
+    "audio",
+    "lyria",
+    "srs",
+    "realtime",
+    "vibesflow"
+  ],
+  "author": "VibesFlow",
+  "license": "MIT"
+}
