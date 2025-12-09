@@ -204,12 +204,14 @@ class SRSManager {
   // Create optimized SRS configuration for low-latency streaming
   generateSRSConfig() {
     return `
-# SRS Configuration for VibesFlow - Optimized for Low-Latency Streaming
+# SRS Configuration for Low-Latency Audio Streaming
 listen              1935;
 max_connections     1000;
 srs_log_tank        console;
 srs_log_level       warn;
+daemon              off;
 
+# HTTP server for FLV streaming
 http_server {
     enabled         on;
     listen          8080;
@@ -217,78 +219,172 @@ http_server {
     crossdomain     on;
 }
 
+# HTTP API for monitoring
 http_api {
     enabled         on;
     listen          1985;
     crossdomain     on;
 }
 
+# Statistics for monitoring
 stats {
     network         0;
     disk            sda sdb xvda xvdb;
 }
 
+# Default virtual host with low-latency settings
 vhost __defaultVhost__ {
-    # Low-latency HLS configuration
+    # Enable TCP nodelay for minimum latency
+    tcp_nodelay     on;
+    
+    # Enable minimum latency mode
+    min_latency     on;
+    
+    # Play settings optimized for ultra-low latency
+    play {
+        # Disable GOP cache for minimum latency
+        gop_cache       off;
+        
+        # Minimum queue length for ultra-low latency
+        queue_length    3;
+        
+        # Minimum merged-write latency
+        mw_latency      50;
+        
+        # Reduce time jitter buffer
+        time_jitter     full;
+    }
+    
+    # Publish settings optimized for real-time input
+    publish {
+        # Disable merged-read for minimum input latency
+        mr              off;
+        
+        # Minimum parse buffer
+        parse_sps       off;
+        
+        # Real-time publishing
+        realtime        on;
+    }
+    
+    # Ultra-low latency HLS (fallback for compatibility)
     hls {
         enabled         on;
-        hls_fragment    1;
-        hls_window      3;
+        hls_fragment    0.5;    # 500ms fragments for low latency
+        hls_window      3;      # Keep only 3 fragments (1.5s buffer)
         hls_path        ./objs/nginx/html;
         hls_m3u8_file   [app]/[stream].m3u8;
         hls_ts_file     [app]/[stream]-[seq].ts;
         hls_acodec      aac;
         hls_vcodec      h264;
+        
+        # Low latency HLS settings
+        hls_dts_directly    on;
+        hls_ts_floor        off;
     }
     
-    # HTTP-FLV for ultra-low latency
+    # HTTP-FLV for ultra-low latency (primary method)
     http_remux {
-        enabled     on;
-        mount       [vhost]/[app]/[stream].flv;
-        hstrs       on;
+        enabled         on;
+        mount           [vhost]/[app]/[stream].flv;
+        hstrs           on;     # Enable HTTP stream
+        
+        # Fast start for immediate playback
+        fast_cache      3;
     }
     
-    # WebRTC for real-time streaming
+    # WebRTC support for real-time streaming
     rtc {
-        enabled     on;
-        rtmp_to_rtc on;
-        rtc_to_rtmp on;
+        enabled         on;
+        rtmp_to_rtc     on;
+        rtc_to_rtmp     on;
+        
+        # Low latency WebRTC settings
+        pli_for_rtmp    1.0;
+        
+        # Audio-only optimization
+        opus {
+            enabled     on;
+        }
     }
     
-    # Optimize for audio streaming
+    # Audio transcoding optimization
     transcode {
-        enabled     on;
-        ffmpeg      ./objs/ffmpeg/bin/ffmpeg;
-        engine ff {
+        enabled         on;
+        ffmpeg          ./objs/ffmpeg/bin/ffmpeg;
+        
+        engine low_latency_audio {
             enabled         on;
-            vcodec          copy;
-            acodec          aac;
-            abitrate        128;
-            asample_rate    48000;
-            achannels       2;
+            vcodec          copy;       # No video processing
+            acodec          aac;        # AAC audio codec
+            abitrate        128;        # 128kbps audio bitrate
+            asample_rate    48000;      # 48kHz sample rate
+            achannels       2;          # Stereo
+            
+            # AAC profile for low latency
             aparams {
                 profile:a   aac_low;
+                tune        zerolatency;
             }
+            
+            # Low latency output
             output          rtmp://127.0.0.1:[port]/[app]?vhost=[vhost]/[stream]_[engine];
         }
     }
     
-    # Security and access control
-    refer {
-        enabled     on;
-        all         off;
-        publish     on;
-        play        on;
+    # Security settings
+    security {
+        # Allow all for development (restrict in production)
+        seo {
+            enabled     off;
+        }
+        
+        # Play security
+        play {
+            check       off;    # Disable for development
+        }
+        
+        # Publish security  
+        publish {
+            check       off;    # Disable for development
+        }
     }
     
-    # DVR for debugging (optional)
+    # DVR disabled for live streaming
     dvr {
         enabled         off;
-        dvr_path        ./objs/nginx/html/[app]/[stream].[timestamp].flv;
-        dvr_plan        segment;
-        dvr_duration    30;
-        dvr_wait_keyframe   on;
     }
+    
+    # Forward disabled (not needed for single server)
+    forward {
+        enabled         off;
+    }
+    
+    # Bandwidth testing disabled
+    bandcheck {
+        enabled         off;
+    }
+}
+
+# Heartbeat for monitoring
+heartbeat {
+    enabled         on;
+    interval        5.0;
+    url             http://127.0.0.1:1985/api/v1/heartbeat;
+    device_id       srs-vibesflow;
+}
+
+# HTTP hooks for session management
+http_hooks {
+    enabled         on;
+    
+    # Notify on publish start/stop
+    on_publish      http://127.0.0.1:3001/hooks/on_publish;
+    on_unpublish    http://127.0.0.1:3001/hooks/on_unpublish;
+    
+    # Notify on play start/stop  
+    on_play         http://127.0.0.1:3001/hooks/on_play;
+    on_stop         http://127.0.0.1:3001/hooks/on_stop;
 }
 `;
   }

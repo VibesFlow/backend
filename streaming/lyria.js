@@ -51,13 +51,30 @@ class LyriaStreamingServer {
   }
 
   setupMiddleware() {
-    // Enhanced CORS configuration for participant access
-    this.app.use(cors({
-      origin: true, // Allow all origins
-      methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-      credentials: true
-    }));
+    // CORS is handled by nginx proxy - no need for Express CORS middleware
+    // this.app.use(cors({
+    //   origin: [
+    //     'http://localhost:8081', 
+    //     'http://localhost:19006', // Expo dev server
+    //     'https://vibesflow.ai', 
+    //     'https://app.vibesflow.ai',
+    //     'https://srs.vibesflow.ai' // SRS domain
+    //   ], 
+    //   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    //   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
+    //   credentials: true,
+    //   optionsSuccessStatus: 200 // Some legacy browsers choke on 204
+    // }));
+    
+    // Handle preflight requests explicitly - handled by nginx
+    // this.app.options('*', (req, res) => {
+    //   res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+    //   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    //   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin');
+    //   res.header('Access-Control-Allow-Credentials', 'true');
+    //   res.sendStatus(200);
+    // });
+    
     this.app.use(express.json({ limit: '50mb' }));
     
     // Health check
@@ -101,6 +118,15 @@ class LyriaStreamingServer {
     
     // Participant leave endpoint
     this.app.post('/stream/:vibeId/leave', this.handleParticipantLeave.bind(this));
+    
+    // Blockchain-based participant routing
+    this.app.get('/vibestream/:rtaId', this.handleVibestreamRoute.bind(this));
+    
+    // SRS HTTP hooks
+    this.app.post('/hooks/on_publish', this.handleSrsPublish.bind(this));
+    this.app.post('/hooks/on_unpublish', this.handleSrsUnpublish.bind(this));
+    this.app.post('/hooks/on_play', this.handleSrsPlay.bind(this));
+    this.app.post('/hooks/on_stop', this.handleSrsStop.bind(this));
   }
 
   // Handle session start from client
@@ -113,6 +139,21 @@ class LyriaStreamingServer {
     }
     
     console.log(`🎬 Starting stream session for vibe ${vibeId} by ${creator}`);
+    
+    // Check if session already exists
+    if (this.activeStreams.has(vibeId)) {
+      console.log(`⚠️ Session ${vibeId} already exists, returning existing URLs`);
+      const existingSession = this.activeStreams.get(vibeId);
+      return res.json({
+        success: true,
+        vibeId,
+        streamingUrl: `${this.srsConfig.publicDomain}/live/${vibeId}.flv`,
+        hlsUrl: `${this.srsConfig.publicDomain}/live/${vibeId}.m3u8`,
+        rtmpUrl: `rtmp://${this.srsConfig.host}:${this.srsConfig.rtmpPort}/live/${vibeId}`,
+        isStreaming: existingSession.isStreaming,
+        timestamp: Date.now()
+      });
+    }
     
     // Create stream session
     const streamSession = {
@@ -129,11 +170,13 @@ class LyriaStreamingServer {
     
     this.activeStreams.set(vibeId, streamSession);
     
+    console.log(`✅ Stream session created for ${vibeId}. Active sessions: ${this.activeStreams.size}`);
+    
     res.json({
       success: true,
       vibeId,
-      streamingUrl: `https://${this.srsConfig.host}/live/${vibeId}.flv`,
-      hlsUrl: `https://${this.srsConfig.host}/live/${vibeId}.m3u8`,
+      streamingUrl: `${this.srsConfig.publicDomain}/live/${vibeId}.flv`,
+      hlsUrl: `${this.srsConfig.publicDomain}/live/${vibeId}.m3u8`,
       rtmpUrl: `rtmp://${this.srsConfig.host}:${this.srsConfig.rtmpPort}/live/${vibeId}`,
       timestamp: Date.now()
     });
@@ -246,19 +289,26 @@ class LyriaStreamingServer {
 
   // Start FFmpeg process to stream to SRS
   startFFmpegStream(vibeId) {
-    const rtmpUrl = `rtmp://${this.srsConfig.host}:${this.srsConfig.rtmpPort}/live/${vibeId}`;
+    // Use localhost for internal RTMP connection (more reliable than public IP)
+    const rtmpUrl = `rtmp://localhost:${this.srsConfig.rtmpPort}/live/${vibeId}`;
     
     console.log(`🎬 Starting FFmpeg stream for vibe ${vibeId} to ${rtmpUrl}`);
     
     const ffmpegArgs = [
       '-f', 's16le',                    // Input format: 16-bit signed little endian
-      '-ar', this.audioConfig.sampleRate.toString(),  // Sample rate
-      '-ac', this.audioConfig.channels.toString(),    // Channels
+      '-ar', this.audioConfig.sampleRate.toString(),  // Sample rate: 48000
+      '-ac', this.audioConfig.channels.toString(),    // Channels: 2 (stereo)
       '-i', 'pipe:0',                   // Input from stdin
-      '-c:a', 'aac',                    // Audio codec
-      '-b:a', '128k',                   // Audio bitrate
-      '-f', 'flv',                      // Output format
+      '-c:a', 'aac',                    // Audio codec: AAC
+      '-b:a', '128k',                   // Audio bitrate: 128kbps
+      '-profile:a', 'aac_low',          // AAC profile for better compatibility
+      '-f', 'flv',                      // Output format: FLV for RTMP
       '-flvflags', 'no_duration_filesize',
+      '-rtmp_live', 'live',             // Enable live streaming mode
+      '-rtmp_buffer', '100',            // Small buffer for low latency
+      '-reconnect', '1',                // Enable reconnection
+      '-reconnect_streamed', '1',       // Reconnect even if some data was streamed
+      '-reconnect_delay_max', '2',      // Max reconnect delay: 2 seconds
       rtmpUrl
     ];
     
@@ -362,6 +412,102 @@ class LyriaStreamingServer {
       participantCount: session.participants.size,
       timestamp: Date.now()
     });
+  }
+
+  // Handle blockchain-based vibestream routing
+  async handleVibestreamRoute(req, res) {
+    const { rtaId } = req.params;
+    
+    console.log(`🔗 Blockchain routing request for RTA ID: ${rtaId}`);
+    
+    // Check if there's an active session for this RTA ID
+    const session = this.activeStreams.get(rtaId);
+    
+    if (!session) {
+      // No active session - return 404 with blockchain info for frontend
+      return res.status(404).json({
+        error: 'Vibestream not currently active',
+        rtaId: rtaId,
+        message: 'This vibestream is not currently streaming. The creator may have ended the session.',
+        blockchain: this.detectBlockchainFromRtaId(rtaId),
+        timestamp: Date.now()
+      });
+    }
+    
+    // Active session found - return streaming info
+    res.json({
+      success: true,
+      rtaId: rtaId,
+      creator: session.creator,
+      network: session.network,
+      blockchain: this.detectBlockchainFromRtaId(rtaId),
+      isStreaming: session.isStreaming,
+      participantCount: session.participants.size,
+      startedAt: session.startedAt,
+      streamingUrl: `${this.srsConfig.publicDomain}/live/${rtaId}.flv`,
+      hlsUrl: `${this.srsConfig.publicDomain}/live/${rtaId}.m3u8`,
+      joinUrl: `${this.srsConfig.publicDomain}/stream/${rtaId}/join`,
+      timestamp: Date.now()
+    });
+  }
+
+  // Detect blockchain network from RTA ID format
+  detectBlockchainFromRtaId(rtaId) {
+    if (rtaId.startsWith('polygon_vibe_')) {
+      return {
+        network: 'polygon',
+        chainId: 80002,
+        name: 'Polygon Amoy Testnet'
+      };
+    } else if (rtaId.startsWith('rta_')) {
+      return {
+        network: 'near',
+        networkId: 'testnet',
+        name: 'NEAR Testnet'
+      };
+  }
+
+  // SRS HTTP Hooks handlers
+  async handleSrsPublish(req, res) {
+    const { app, stream, param } = req.body;
+    console.log(`📡 SRS: Stream started - ${app}/${stream}`);
+    
+    // Update session streaming status
+    const session = this.activeStreams.get(stream);
+    if (session) {
+      session.isStreaming = true;
+      console.log(`✅ Session ${stream} marked as streaming`);
+    }
+    
+    res.json({ code: 0 }); // SRS expects code: 0 for success
+  }
+
+  async handleSrsUnpublish(req, res) {
+    const { app, stream, param } = req.body;
+    console.log(`📡 SRS: Stream ended - ${app}/${stream}`);
+    
+    // Update session streaming status
+    const session = this.activeStreams.get(stream);
+    if (session) {
+      session.isStreaming = false;
+      console.log(`⏹️ Session ${stream} marked as not streaming`);
+    }
+    
+    res.json({ code: 0 });
+  }
+
+  async handleSrsPlay(req, res) {
+    const { app, stream, param } = req.body;
+    console.log(`👤 SRS: Participant started playing - ${app}/${stream}`);
+    
+    res.json({ code: 0 });
+  }
+
+  async handleSrsStop(req, res) {
+    const { app, stream, param } = req.body;
+    console.log(`👤 SRS: Participant stopped playing - ${app}/${stream}`);
+    
+    res.json({ code: 0 });
   }
 
   // Start the server
